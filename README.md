@@ -8,13 +8,14 @@ Pré-requisitos: JDK 21 e acesso ao Maven Central no primeiro build. No Git Bash
 
 ```bash
 ./mvnw -B -ntp verify
-# Alternativa Windows: ./mvnw.cmd -B -ntp verify
 # Com GNU Make instalado: make verify
 ```
 
 O Wrapper baixa a versão fixa do Maven, sem depender do Maven global. `make install` preserva a instalação do artefato no repositório Maven local e também executa a fase verify. Não é necessário instalar o artefato para executar o serviço.
 
-Os dois scripts são oficiais e devem ser versionados: `mvnw` para Bash/Linux/macOS (incluindo Git Bash) e `mvnw.cmd` para PowerShell/CMD. Ambos usam `.mvn/wrapper/maven-wrapper.properties`. O Makefile chama `bash ./mvnw` explicitamente porque o GNU Make para Windows pode executar receitas pelo CMD mesmo quando iniciado no Git Bash. Git Bash/Bash deve estar no PATH. `install` compila, testa, verifica cobertura, empacota e instala o JAR no cache Maven local; não é apenas download de dependências.
+O projeto mantém somente o script `mvnw`, para Git Bash/Linux/macOS. No Windows, executar pelo Git Bash; não há Wrapper nativo para PowerShell/CMD. A pasta `.mvn/` deve permanecer versionada: `.mvn/wrapper/maven-wrapper.properties` informa qual Maven baixar e executar. Ela não é o cache de dependências, que fica em `~/.m2/`.
+
+O Makefile chama `bash ./mvnw` explicitamente porque o GNU Make para Windows pode executar receitas pelo CMD mesmo quando iniciado no Git Bash. Git Bash/Bash deve estar no PATH. `install` compila, testa, verifica cobertura, empacota e instala o JAR no cache Maven local; não é apenas download de dependências.
 
 JUnit e Mockito rodam sem Docker/banco. JaCoCo exige pelo menos 90% de linhas e branches; o launcher Spring é a única classe excluída. Relatório: `target/site/jacoco/index.html`; resultados: `target/surefire-reports/`. Integração com banco, contratos e E2E serão adicionados posteriormente. Mocks não comprovam SQL, migrations nem isolamento real no banco.
 
