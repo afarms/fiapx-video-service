@@ -1,0 +1,18 @@
+﻿# Build e IDE
+**/target/
+.idea/
+*.iml
+.vscode/
+# Ambiente e dados
+.env
+.env.*
+!.env.example
+*.log
+.local/
+data/
+uploads/
+outputs/
+temp/
+# Sistema
+.DS_Store
+Thumbs.db
