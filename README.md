@@ -1,6 +1,6 @@
 ﻿# FIAP X — Serviço de vídeos
 
-Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Inclui modelo inicial, adaptador JDBC, migration Liquibase SQL e testes unitários. APIs de negócio, autenticação, S3 e SQS ainda não estão implementados.
+Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui modelo inicial, migration Liquibase SQL e testes unitários. APIs de negócio, autenticação, S3 e SQS ainda não estão implementados.
 
 ## Build e testes unitários
 
@@ -17,7 +17,9 @@ O projeto mantém somente o script `mvnw`, para Git Bash/Linux/macOS. No Windows
 
 O Makefile chama `bash ./mvnw` explicitamente porque o GNU Make para Windows pode executar receitas pelo CMD mesmo quando iniciado no Git Bash. Git Bash/Bash deve estar no PATH. `install` compila, testa, verifica cobertura, empacota e instala o JAR no cache Maven local; não é apenas download de dependências.
 
-JUnit e Mockito rodam sem Docker/banco. JaCoCo exige pelo menos 90% de linhas e branches; o launcher Spring é a única classe excluída. Relatório: `target/site/jacoco/index.html`; resultados: `target/surefire-reports/`. Integração com banco, contratos e E2E serão adicionados posteriormente. Mocks não comprovam SQL, migrations nem isolamento real no banco.
+JUnit e Mockito rodam sem Docker/banco. JaCoCo exige pelo menos 90% de linhas e branches; o launcher Spring é a única classe excluída. A suíte também compila o core com classpath vazio para impedir dependência de framework ou infraestrutura. Relatório: `target/site/jacoco/index.html`; resultados: `target/surefire-reports/`. Integração com banco, contratos e E2E serão adicionados posteriormente. Mocks não comprovam consultas JPA, migrations nem isolamento real no banco.
+
+Após mover pacotes em um checkout existente, executar `./mvnw clean verify` para eliminar classes compiladas nos caminhos antigos.
 
 ## Ambiente local — Git Bash e Rancher Desktop
 
@@ -76,7 +78,7 @@ Identidade, extração de imagens e notificações pertencem a serviços indepen
 
 - [Domínio e regras](docs/domain/videos.md).
 - [Limite arquitetural](docs/architecture/boundary.md).
+- [Clean Architecture e persistência](docs/architecture/clean-architecture.md).
 - [Contratos propostos](contracts/README.md).
-- [Evidências](evidence/README.md).
 
 A visão integrada, requisitos do desafio, stack compartilhada e Terraform pertencem ao repositório fiapx-infra. URLs dos repositórios serão publicadas quando existirem; este serviço possui build independente.

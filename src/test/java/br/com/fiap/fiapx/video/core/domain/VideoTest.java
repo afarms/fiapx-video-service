@@ -1,4 +1,4 @@
-package br.com.fiap.fiapx.video.domain;
+package br.com.fiap.fiapx.video.core.domain;
 
 import static org.junit.jupiter.api.Assertions.*;
 

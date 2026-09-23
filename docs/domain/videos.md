@@ -1,6 +1,6 @@
 ﻿# Domínio de vídeos
 
-Estado: modelo inicial de metadados e adaptador JDBC implementados; fluxo funcional abaixo ainda em evolução. RF-01, RF-03, RF-05 e RT-01 orientam este domínio.
+Estado: modelo inicial no core e adaptador Spring Data JPA na infraestrutura implementados; fluxo funcional abaixo ainda em evolução. RF-01, RF-03, RF-05 e RT-01 orientam este domínio.
 
 ## Regras confirmadas
 
@@ -12,7 +12,7 @@ Saída disponível até completedAt + 24h. Expiração de download não altera s
 
 ## Modelo proposto
 
-Incremento atual: `Video` imutável com id/ownerId UUID, originalName (até 255 caracteres Java), originalObjectKey (até 1024), sizeBytes e createdAt. Estado inicial UPLOADING. Validação de extensão aceita os sete formatos sem diferenciar maiúsculas/minúsculas; rejeita nome contendo caminho e tamanho fora de 1–100.000.000 bytes. Isso não valida conteúdo/duração. Persistência JDBC insere e consulta por id + ownerId; não há endpoint público nem autorização implementada.
+Incremento atual: `Video` imutável com id/ownerId UUID, originalName (até 255 caracteres Java), originalObjectKey (até 1024), sizeBytes e createdAt. Estado inicial UPLOADING. Validação de extensão aceita os sete formatos sem diferenciar maiúsculas/minúsculas; rejeita nome contendo caminho e tamanho fora de 1–100.000.000 bytes. Isso não valida conteúdo/duração. `VideoGateway` define inserção e consulta por id + ownerId. `VideoGatewayAdapter` implementa o contrato com Spring Data JPA e conversão domínio/entidade; não há endpoint público nem autorização implementada.
 
 Migration inicial cria `videos`, chave única de objeto e índice por dono/data/id. Apenas UPLOADING é permitido nesta etapa; a ampliação abaixo virá por novos changesets junto dos contratos de transição. Nenhuma FK aponta para banco de identidade. Retentativa de INSERT duplicado não sobrescreve o registro.
 
