@@ -20,6 +20,12 @@ Video: id UUID, ownerId imutável, originalObjectKey, resultObjectKey, originalN
 
 Estados: UPLOADING -> QUEUED -> PROCESSING -> COMPLETED ou FAILED. Mídia inválida descoberta pelo worker termina em FAILED e gera aviso. Janela de disponibilidade é atributo separado do estado. Controle de versão e tentativa rejeita eventos antigos e transições regressivas.
 
+## Consultas implementadas
+
+Os casos de uso `GetVideoUseCase` e `ListVideosUseCase`, em `core/usecase`, usam somente o `VideoGateway`. A consulta por ID exige ID e proprietário; ausente ou alheio produz a mesma `VideoNotFoundException`. A listagem exige proprietário e `VideoPageRequest` (página >= 0, tamanho de 1 a 100), retornando `VideoPage` com itens imutáveis e total do proprietário. Ordenação fixa por criação decrescente e ID decrescente para desempate. Página fora do intervalo retorna itens vazios com total preservado. O limite de 100 é uma decisão técnica de paginação.
+
+O adapter traduz paginação para Spring Data; filtro e contagem por proprietário pertencem ao repositório. Erros de acesso a dados continuam como `VideoPersistenceException`. UUIDs e requisição nulos são rejeitados antes de consultar. A origem autenticada do proprietário e a checagem de conta ativa serão responsabilidade da futura entrada HTTP; este incremento não implementa autenticação nem endpoints. A paginação não mantém snapshot entre chamadas concorrentes. Não houve mudança no schema ou nos estados.
+
 ## Aceite e arquivos
 
 Proposta: upload via API autenticada para S3 privado, por streaming com limite de bytes; arquivo não é mantido inteiro em memória. Após persistência do original, transação grava QUEUED + outbox antes de 202. Duração/codecs serão inspecionados pelo processamento; 202 confirma aceite durável para validação/processamento, não garante mídia válida ou sucesso.

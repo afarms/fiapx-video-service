@@ -74,6 +74,14 @@ O build da imagem não executa os testes. No workflow, `unit-tests` executa `ver
 
 Para EKS, configurar probes HTTP em `/actuator/health/liveness` e `/actuator/health/readiness`; Kubernetes não usa o HEALTHCHECK do Dockerfile. Credenciais serão fornecidas pelo ambiente de implantação. Tamanho final e arquitetura precisam ser verificados no build de destino.
 
+## Consultas internas implementadas
+
+`GetVideoUseCase` consulta por ID e proprietário e retorna metadados/estado. Vídeo inexistente ou de outro usuário gera a mesma `VideoNotFoundException`. `ListVideosUseCase` retorna `VideoPage` com itens imutáveis, página, tamanho e total de vídeos daquele proprietário. A paginação começa em zero, aceita tamanho de 1 a 100 e ordena por `createdAt DESC, id DESC`. Página além do último resultado retorna itens vazios, preservando o total.
+
+Os casos de uso ficam no core sem Spring; `BeanConfig` monta suas dependências. A infraestrutura converte a paginação para Spring Data e filtra por proprietário antes de paginar/contar. Falhas de banco geram `VideoPersistenceException`, sem serem tratadas como ausência. Paginação por offset não garante um snapshot entre chamadas concorrentes.
+
+Ainda não há rotas HTTP de negócio ou autenticação. O chamador futuro deverá obter o proprietário do contexto autenticado e verificar a situação da conta; o core recebe esse identificador e não autentica. O resultado interno `Video` inclui a chave do objeto e não define o futuro DTO público. Testes unitários verificam os filtros enviados e o tratamento dos resultados; isolamento real no PostgreSQL será validado em testes de integração.
+
 ## Responsabilidades
 
 - Registrar vídeo vinculado ao usuário autenticado e validar limites de upload.
