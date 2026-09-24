@@ -19,6 +19,7 @@ server:
 management:
   endpoints:
     web:
+      base-path: /actuator
       exposure:
         include: health,info
   endpoint:
@@ -32,5 +33,7 @@ management:
 springdoc:
   api-docs:
     enabled: ${API_DOCS_ENABLED:false}
+    path: /v3/api-docs
   swagger-ui:
     enabled: ${API_DOCS_ENABLED:false}
+    path: /swagger-ui.html

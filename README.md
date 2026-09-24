@@ -41,7 +41,17 @@ curl --fail http://localhost:8080/actuator/health/readiness
 curl --fail http://localhost:8080/v3/api-docs
 ```
 
-Swagger UI: http://localhost:8080/swagger-ui/index.html. Ainda não há endpoints de negócio no documento. OpenAPI é habilitado pelo Compose e desabilitado por padrão fora dele.
+Swagger UI: http://localhost:8080/swagger-ui.html (redireciona para a interface). OpenAPI JSON: http://localhost:8080/v3/api-docs. Os caminhos estão explícitos no application.yml. Ainda não há endpoints de negócio no documento. OpenAPI é habilitado pelo Compose; na execução local pelo Makefile, definir `API_DOCS_ENABLED=true` no `.env`.
+
+Para executar Java no host usando o PostgreSQL já iniciado no Docker:
+
+```bash
+make run
+```
+
+O alvo run carrega o `.env` com Bash e inicia spring-boot:run; não depende de package prévio. `make package` gera target/app.jar; `make verify` também valida o gate de cobertura. Executar apenas uma instância da aplicação por porta: se o serviço video do Compose estiver em 8080, pará-lo antes de usar make run nessa porta.
+
+Saúde: `/actuator/health`, `/actuator/health/liveness` e `/actuator/health/readiness`. Readiness inclui o banco; essas rotas são fornecidas pelo Actuator, sem controllers próprios.
 
 O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica `001-create-videos.sql` na inicialização da aplicação. A tabela inicial aceita somente `UPLOADING`; registrar metadados não confirma aceite durável do processamento. Novos estados, outbox/inbox e resultados terão novas migrations, sem editar changesets aplicados.
 
