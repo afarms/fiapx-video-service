@@ -1,6 +1,6 @@
-﻿# FIAP X — Serviço de vídeos
+# FIAP X — Serviço de vídeos
 
-Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui modelo inicial, migration Liquibase SQL e testes unitários. APIs de negócio, autenticação, S3 e SQS ainda não estão implementados.
+Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui modelo inicial, migration Liquibase SQL e testes unitários. Consultas HTTP autenticadas estão implementadas; upload, download, S3 e SQS continuam pendentes.
 
 ## Build e testes unitários
 
@@ -31,7 +31,7 @@ docker compose version
 cp .env.example .env
 ```
 
-Definir uma senha local em `DB_PASSWORD` no `.env` antes de continuar. Esse arquivo não é versionado. Escolher `POSTGRES_PORT` e `APP_PORT` livres, se os padrões 5432/8080 estiverem ocupados.
+Definir uma senha local em `DB_PASSWORD` no `.env` e configurar a identidade conforme a seção abaixo antes de continuar. Esse arquivo não é versionado. Escolher `POSTGRES_PORT` e `APP_PORT` livres, se os padrões 5432/8080 estiverem ocupados.
 
 ```bash
 docker compose config --quiet
@@ -41,7 +41,7 @@ curl --fail http://localhost:8080/actuator/health/readiness
 curl --fail http://localhost:8080/v3/api-docs
 ```
 
-Swagger UI: http://localhost:8080/swagger-ui.html (redireciona para a interface). OpenAPI JSON: http://localhost:8080/v3/api-docs. Os caminhos estão explícitos no application.yml. Ainda não há endpoints de negócio no documento. OpenAPI é habilitado pelo Compose; na execução local pelo Makefile, definir `API_DOCS_ENABLED=true` no `.env`.
+Swagger UI: http://localhost:8080/swagger-ui.html (redireciona para a interface). OpenAPI JSON: http://localhost:8080/v3/api-docs. Os caminhos estão explícitos no application.yml. As consultas de vídeos estão documentadas; usar Authorize com o accessToken da identidade. OpenAPI é habilitado pelo Compose; na execução local pelo Makefile, definir `API_DOCS_ENABLED=true` no `.env`.
 
 Para executar Java no host usando o PostgreSQL já iniciado no Docker:
 
@@ -70,17 +70,44 @@ Dockerfile multi-stage: JDK 21 + Wrapper compila com `package -DskipTests`; o es
 docker build -t fiapx-video-service:local .
 ```
 
-O build da imagem não executa os testes. No workflow, `unit-tests` executa `verify` e a cobertura; `container-build` só inicia após seu sucesso via `needs`. Ambos devem ser checks obrigatórios da main. O workflow está preparado para PR/main, sem publicação de imagem ou deploy. Execução remota depende da criação do repositório GitHub.
+O build da imagem não executa os testes. No workflow, `unit-tests` executa `verify` e a cobertura; `container-build` só inicia após seu sucesso via `needs`. Ambos devem ser checks obrigatórios da main. O workflow está preparado para PR/main, sem publicação de imagem ou deploy. O repositório GitHub já possui CI para PR/main.
 
 Para EKS, configurar probes HTTP em `/actuator/health/liveness` e `/actuator/health/readiness`; Kubernetes não usa o HEALTHCHECK do Dockerfile. Credenciais serão fornecidas pelo ambiente de implantação. Tamanho final e arquitetura precisam ser verificados no build de destino.
 
-## Consultas internas implementadas
+## Consultas autenticadas implementadas
+
+| Rota | Resposta |
+| --- | --- |
+| `GET /videos?page=0&size=20` | `items`, `page`, `size`, `totalElements` do usuário autenticado |
+| `GET /videos/{id}` | `id`, `originalName`, `sizeBytes`, `status`, `createdAt` de um vídeo próprio |
+
+Enviar `Authorization: Bearer <accessToken>` obtido no login da identidade. USER e ADMIN só consultam seus próprios vídeos; `ownerId` não é aceito como filtro. O DTO público não contém a chave de armazenamento. Sem vídeos cadastrados, a lista retorna vazia; ainda não há endpoint de upload.
+
+O serviço valida RS256, issuer, audience, sub, versão e tempo do JWT usando somente a chave pública. Antes de consultar o banco, verifica a conta e a versão atual em `POST /internal/accounts/validate`, autenticado com `X-Service-Key`. Não há cache positivo nem retry automático. Troca de credenciais e inativação impedem o próximo acesso com o token anterior.
+
+Erros: 400 para UUID/paginação inválidos; 401 para ausência, invalidade ou revogação do token; 403 para bloqueio explícito informado pela identidade; 404 idêntico para vídeo ausente ou alheio; 503 para falha de banco, transporte, credencial do serviço ou resposta inconsistente da identidade. O contrato interno requer `code` nos erros: `UNAUTHORIZED`, `FORBIDDEN` e `SERVICE_UNAUTHORIZED`. Erros internos sem código reconhecido falham com 503. Integrar a versão da identidade com esse contrato antes de atualizar vídeos.
+
+### Configuração da identidade
+
+Iniciar o [serviço de identidade](https://github.com/afarms/fiapx-identity-service) e adicionar ao `.env` local:
+
+- `IDENTITY_SERVICE_KEY`: mesmo segredo configurado na identidade, com pelo menos 32 caracteres.
+- `IDENTITY_URL`: URL acessível pelo Java no host; padrão `http://localhost:8081`.
+- `IDENTITY_DOCKER_URL`: URL acessível pelo container; padrão `http://host.docker.internal:8081`. Em rede Docker compartilhada, usar o nome do serviço e sua porta interna.
+- `JWT_PUBLIC_KEY`: PEM público usado pelo Java no host; padrão `file:.local/keys/identity-public.pem`.
+- `IDENTITY_PUBLIC_KEY_PATH`: arquivo público montado pelo Compose; padrão `./.local/keys/identity-public.pem`.
+
+Copiar somente a chave **pública** da identidade para esse caminho. A chave privada permanece na identidade. Arquivos PEM e `.local/` são ignorados pelo Git. A aplicação falha na inicialização se a chave estiver ausente ou inválida. O issuer padrão é `fiapx-identity` e a audience é `fiapx-api`, configuráveis por `JWT_ISSUER` e `JWT_AUDIENCE`.
+
+Timeout de conexão padrão de 2s e leitura de 3s, configuráveis por `IDENTITY_CONNECT_TIMEOUT_MS` e `IDENTITY_READ_TIMEOUT_MS` no ambiente da aplicação. Em implantação, restringir a rede interna e proteger o transporte com TLS. Readiness verifica o banco; indisponibilidade da identidade é tratada nas consultas com 503.
+
+### Casos de uso e persistência
 
 `GetVideoUseCase` consulta por ID e proprietário e retorna metadados/estado. Vídeo inexistente ou de outro usuário gera a mesma `VideoNotFoundException`. `ListVideosUseCase` retorna `VideoPage` com itens imutáveis, página, tamanho e total de vídeos daquele proprietário. A paginação começa em zero, aceita tamanho de 1 a 100 e ordena por `createdAt DESC, id DESC`. Página além do último resultado retorna itens vazios, preservando o total.
 
 Os casos de uso ficam no core sem Spring; `BeanConfig` monta suas dependências. A infraestrutura converte a paginação para Spring Data e filtra por proprietário antes de paginar/contar. Falhas de banco geram `VideoPersistenceException`, sem serem tratadas como ausência. Paginação por offset não garante um snapshot entre chamadas concorrentes.
 
-Ainda não há rotas HTTP de negócio ou autenticação. O chamador futuro deverá obter o proprietário do contexto autenticado e verificar a situação da conta; o core recebe esse identificador e não autentica. O resultado interno `Video` inclui a chave do objeto e não define o futuro DTO público. Testes unitários verificam os filtros enviados e o tratamento dos resultados; isolamento real no PostgreSQL será validado em testes de integração.
+AuthorizeVideoAccessUseCase e AccountAccessGateway mantêm a decisão de autorização no core. O adapter HTTP, decoder JWT e controllers ficam na infraestrutura, com composição no BeanConfig. O proprietário é derivado do JWT validado e a conta é consultada antes do acesso aos vídeos. A chave do objeto presente no domínio é removida na conversão para o DTO público.
 
 ## Responsabilidades
 

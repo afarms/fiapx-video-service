@@ -14,8 +14,17 @@ spring:
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
   shutdown: graceful
+identity:
+  url: ${IDENTITY_URL:http://localhost:8081}
+  service-key: ${IDENTITY_SERVICE_KEY}
+  connect-timeout-ms: ${IDENTITY_CONNECT_TIMEOUT_MS:2000}
+  read-timeout-ms: ${IDENTITY_READ_TIMEOUT_MS:3000}
+  jwt:
+    issuer: ${JWT_ISSUER:fiapx-identity}
+    audience: ${JWT_AUDIENCE:fiapx-api}
+    public-key: ${JWT_PUBLIC_KEY:file:.local/keys/identity-public.pem}
 management:
   endpoints:
     web:

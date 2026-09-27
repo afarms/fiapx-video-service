@@ -10,6 +10,8 @@
 !.env.example
 *.log
 .local/
+*.pem
+*.key
 data/
 uploads/
 outputs/
