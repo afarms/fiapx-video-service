@@ -26,13 +26,26 @@ services:
       DB_USERNAME: fiapx_video
       DB_PASSWORD: ${DB_PASSWORD:?Define DB_PASSWORD in .env}
       API_DOCS_ENABLED: "true"
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      IDENTITY_URL: ${IDENTITY_DOCKER_URL:-http://host.docker.internal:8081}
+      IDENTITY_SERVICE_KEY: ${IDENTITY_SERVICE_KEY:?Define IDENTITY_SERVICE_KEY in .env}
+      JWT_PUBLIC_KEY: file:/run/keys/identity-public.pem
+      JWT_ISSUER: ${JWT_ISSUER:-fiapx-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-fiapx-api}
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75.0"
     ports:
-      - "127.0.0.1:${APP_PORT:-8080}:8080"
+      - "127.0.0.1:${APP_PORT:-8080}:${SERVER_PORT:-8080}"
     depends_on:
       postgres:
         condition: service_healthy
     mem_limit: 512m
+    volumes:
+      - type: bind
+        source: ${IDENTITY_PUBLIC_KEY_PATH:-./.local/keys/identity-public.pem}
+        target: /run/keys/identity-public.pem
+        read_only: true
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777

@@ -1,4 +1,4 @@
-﻿# Domínio de vídeos
+# Domínio de vídeos
 
 Estado: modelo inicial no core e adaptador Spring Data JPA na infraestrutura implementados; fluxo funcional abaixo ainda em evolução. RF-01, RF-03, RF-05 e RT-01 orientam este domínio.
 
@@ -12,7 +12,7 @@ Saída disponível até completedAt + 24h. Expiração de download não altera s
 
 ## Modelo proposto
 
-Incremento atual: `Video` imutável com id/ownerId UUID, originalName (até 255 caracteres Java), originalObjectKey (até 1024), sizeBytes e createdAt. Estado inicial UPLOADING. Validação de extensão aceita os sete formatos sem diferenciar maiúsculas/minúsculas; rejeita nome contendo caminho e tamanho fora de 1–100.000.000 bytes. Isso não valida conteúdo/duração. `VideoGateway` define inserção e consulta por id + ownerId. `VideoGatewayAdapter` implementa o contrato com Spring Data JPA e conversão domínio/entidade; não há endpoint público nem autorização implementada.
+Incremento atual: `Video` imutável com id/ownerId UUID, originalName (até 255 caracteres Java), originalObjectKey (até 1024), sizeBytes e createdAt. Estado inicial UPLOADING. Validação de extensão aceita os sete formatos sem diferenciar maiúsculas/minúsculas; rejeita nome contendo caminho e tamanho fora de 1–100.000.000 bytes. Isso não valida conteúdo/duração. `VideoGateway` define inserção e consulta por id + ownerId. `VideoGatewayAdapter` implementa o contrato com Spring Data JPA e conversão domínio/entidade; as consultas HTTP autenticadas estão implementadas, sem upload ou download.
 
 Migration inicial cria `videos`, chave única de objeto e índice por dono/data/id. Apenas UPLOADING é permitido nesta etapa; a ampliação abaixo virá por novos changesets junto dos contratos de transição. Nenhuma FK aponta para banco de identidade. Retentativa de INSERT duplicado não sobrescreve o registro.
 
@@ -24,7 +24,7 @@ Estados: UPLOADING -> QUEUED -> PROCESSING -> COMPLETED ou FAILED. Mídia invál
 
 Os casos de uso `GetVideoUseCase` e `ListVideosUseCase`, em `core/usecase`, usam somente o `VideoGateway`. A consulta por ID exige ID e proprietário; ausente ou alheio produz a mesma `VideoNotFoundException`. A listagem exige proprietário e `VideoPageRequest` (página >= 0, tamanho de 1 a 100), retornando `VideoPage` com itens imutáveis e total do proprietário. Ordenação fixa por criação decrescente e ID decrescente para desempate. Página fora do intervalo retorna itens vazios com total preservado. O limite de 100 é uma decisão técnica de paginação.
 
-O adapter traduz paginação para Spring Data; filtro e contagem por proprietário pertencem ao repositório. Erros de acesso a dados continuam como `VideoPersistenceException`. UUIDs e requisição nulos são rejeitados antes de consultar. A origem autenticada do proprietário e a checagem de conta ativa serão responsabilidade da futura entrada HTTP; este incremento não implementa autenticação nem endpoints. A paginação não mantém snapshot entre chamadas concorrentes. Não houve mudança no schema ou nos estados.
+O adapter traduz paginação para Spring Data; filtro e contagem por proprietário pertencem ao repositório. Erros de acesso a dados continuam como `VideoPersistenceException`. UUIDs e requisição nulos são rejeitados antes de consultar. A entrada HTTP deriva o proprietário do JWT validado e consulta a identidade a cada chamada antes de acessar os vídeos. USER e ADMIN recebem o mesmo filtro por dono. A paginação não mantém snapshot entre chamadas concorrentes. Não houve mudança no schema ou nos estados.
 
 ## Aceite e arquivos
 
