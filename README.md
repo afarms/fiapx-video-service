@@ -51,6 +51,8 @@ make run
 
 O alvo run carrega o `.env` com Bash e inicia spring-boot:run; não depende de package prévio. `make package` gera target/app.jar; `make verify` também valida o gate de cobertura. Executar apenas uma instância da aplicação por porta: se o serviço video do Compose estiver em 8080, pará-lo antes de usar make run nessa porta.
 
+`SERVER_PORT` define a porta em que o Java escuta (padrão 8080), tanto no host quanto no container. O healthcheck da imagem acompanha essa variável. No Compose, `APP_PORT` define a porta publicada no host e aponta para `SERVER_PORT` no container. Por exemplo, `APP_PORT=8080` e `SERVER_PORT=9090` mantêm o acesso externo em localhost:8080. Com `docker run`, ajustar também o mapeamento `-p 8080:9090` ao usar `-e SERVER_PORT=9090`; `EXPOSE 8080` apenas documenta o padrão da imagem.
+
 Saúde: `/actuator/health`, `/actuator/health/liveness` e `/actuator/health/readiness`. Readiness inclui o banco; essas rotas são fornecidas pelo Actuator, sem controllers próprios.
 
 O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica `001-create-videos.sql` na inicialização da aplicação. A tabela inicial aceita somente `UPLOADING`; registrar metadados não confirma aceite durável do processamento. Novos estados, outbox/inbox e resultados terão novas migrations, sem editar changesets aplicados.
