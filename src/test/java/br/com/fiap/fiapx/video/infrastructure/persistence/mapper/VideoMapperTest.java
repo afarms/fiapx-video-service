@@ -3,6 +3,7 @@ package br.com.fiap.fiapx.video.infrastructure.persistence.mapper;
 import static org.junit.jupiter.api.Assertions.*;
 
 import br.com.fiap.fiapx.video.core.domain.Video;
+import br.com.fiap.fiapx.video.core.domain.UploadIntent;
 import br.com.fiap.fiapx.video.infrastructure.persistence.entity.VideoEntity;
 import java.time.Instant;
 import java.util.UUID;
@@ -33,6 +34,36 @@ class VideoMapperTest {
     @Test
     void doesNotReuseMutableJpaInstances() {
         assertNotSame(mapper.toEntity(video), mapper.toEntity(video));
+    }
+
+    @Test
+    void mapsQueuedMetadataWithoutResettingState() {
+        assertEquals(video.queued(), mapper.toDomain(mapper.toEntity(video.queued())));
+    }
+
+    @Test
+    void preservesPermanentIntentionAndAttemptForUploadingAndAcceptedRecords() {
+        UUID attempt = UUID.randomUUID();
+        var metadata = new Video(video.id(), video.ownerId(), video.originalName(),
+                UploadIntent.objectKey(video.ownerId(), video.id(), attempt), video.sizeBytes(), video.createdAt());
+        var intent = new UploadIntent(metadata, UUID.randomUUID(), "a".repeat(64), attempt,
+                video.createdAt().plusSeconds(300), null);
+        assertEquals(intent, mapper.toUploadIntent(mapper.toUploadEntity(intent)));
+        assertTrue(mapper.toUploadEntity(intent).isNew());
+        var accepted = intent.accept(attempt, video.createdAt().plusSeconds(1));
+        assertEquals(accepted, mapper.toUploadIntent(mapper.toUploadEntity(accepted)));
+    }
+
+    @Test
+    void legacyMetadataDoesNotAcquireInventedClientIdentity() {
+        var entity = mapper.toEntity(video);
+        assertNull(entity.getIdempotencyKey());
+        assertNull(entity.getContentSha256());
+        assertNull(entity.getUploadAttemptId());
+        assertNull(entity.getUploadLeaseUntil());
+        assertNull(entity.getAcceptedAt());
+        assertThrows(NullPointerException.class, () -> mapper.toUploadIntent(entity));
+        assertThrows(NullPointerException.class, () -> mapper.toUploadEntity(null));
     }
 
     @ParameterizedTest

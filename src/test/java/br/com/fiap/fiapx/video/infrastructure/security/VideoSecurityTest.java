@@ -83,7 +83,12 @@ class VideoSecurityTest {
     @EnableWebSecurity
     static class SecurityTestConfig {
         @Bean JwtDecoder decoder() { return mock(JwtDecoder.class); }
-        @Bean SecurityFilterChain chain(HttpSecurity http) throws Exception { return new BeanConfig().securityFilterChain(http); }
+        @Bean SecurityFilterChain chain(HttpSecurity http) throws Exception {
+            return new BeanConfig().securityFilterChain(http,
+                    new org.springframework.beans.factory.support.DefaultListableBeanFactory()
+                            .getBeanProvider(br.com.fiap.fiapx.video.infrastructure.web.UploadFiles.class),
+                    org.mockito.Mockito.mock(br.com.fiap.fiapx.video.core.usecase.AuthorizeVideoAccessUseCase.class));
+        }
     }
     @Test void createsStatelessBearerFilterChain() {
         try(var context=new AnnotationConfigWebApplicationContext()) {

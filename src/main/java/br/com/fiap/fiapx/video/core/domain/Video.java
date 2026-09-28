@@ -6,9 +6,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
-/** Initial upload metadata. This record does not acknowledge durable processing. */
+/** Metadata only. A QUEUED value must be committed together with its outbox event. */
 public record Video(UUID id, UUID ownerId, String originalName, String originalObjectKey,
-                    long sizeBytes, Instant createdAt) {
+                    long sizeBytes, Instant createdAt, VideoStatus state) {
     public static final long MAX_SIZE_BYTES = 100_000_000L;
     private static final Set<String> FORMATS = Set.of("mp4", "avi", "mov", "mkv", "wmv", "flv", "webm");
 
@@ -16,6 +16,7 @@ public record Video(UUID id, UUID ownerId, String originalName, String originalO
         Objects.requireNonNull(id, "id is required");
         Objects.requireNonNull(ownerId, "ownerId is required");
         Objects.requireNonNull(createdAt, "createdAt is required");
+        Objects.requireNonNull(state, "state is required");
         requireText(originalName, 255, "originalName");
         requireText(originalObjectKey, 1024, "originalObjectKey");
         if (originalName.contains("/") || originalName.contains("\\")) {
@@ -30,8 +31,17 @@ public record Video(UUID id, UUID ownerId, String originalName, String originalO
         }
     }
 
+    public Video(UUID id, UUID ownerId, String originalName, String originalObjectKey,
+                 long sizeBytes, Instant createdAt) {
+        this(id, ownerId, originalName, originalObjectKey, sizeBytes, createdAt, VideoStatus.UPLOADING);
+    }
+
     public String status() {
-        return "UPLOADING";
+        return state.name();
+    }
+
+    public Video queued() {
+        return new Video(id, ownerId, originalName, originalObjectKey, sizeBytes, createdAt, VideoStatus.QUEUED);
     }
 
     private static void requireText(String value, int maxLength, String field) {

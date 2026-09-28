@@ -26,8 +26,31 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.security.interfaces.RSAPublicKey;
 import java.time.*;
+import br.com.fiap.fiapx.video.core.gateway.UploadGateway;
+import br.com.fiap.fiapx.video.core.gateway.OriginalStorageGateway;
+import br.com.fiap.fiapx.video.core.usecase.UploadVideoUseCase;
+import br.com.fiap.fiapx.video.infrastructure.persistence.adapter.UploadGatewayAdapter;
+import br.com.fiap.fiapx.video.infrastructure.persistence.repository.SpringOutboxRepository;
+import br.com.fiap.fiapx.video.infrastructure.web.UploadFiles;
+import br.com.fiap.fiapx.video.infrastructure.web.MultipartSpool;
+import br.com.fiap.fiapx.video.infrastructure.security.UploadAdmissionFilter;
+import br.com.fiap.fiapx.video.infrastructure.storage.*;
+import br.com.fiap.fiapx.video.infrastructure.messaging.OutboxDispatcher;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
+import software.amazon.awssdk.auth.credentials.*;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import tools.jackson.databind.json.JsonMapper;
+import java.nio.file.Path;
 
 @Configuration(proxyBeanMethods = false)
+@EnableScheduling
 public class BeanConfig {
     @Bean
     public Clock clock() { return Clock.systemUTC(); }
@@ -84,7 +107,11 @@ public class BeanConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectProvider<UploadFiles> files,
+                                                   AuthorizeVideoAccessUseCase authorize) throws Exception {
+        if (files.getIfAvailable() != null) {
+            http.addFilterAfter(new UploadAdmissionFilter(authorize, files.getObject()), BearerTokenAuthenticationFilter.class);
+        }
         return http.csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(a -> a.requestMatchers("/actuator/health/**", "/swagger-ui.html",
@@ -110,5 +137,90 @@ public class BeanConfig {
     @Bean
     public VideoGateway videoGateway(SpringVideoRepository repository, VideoMapper mapper) {
         return new VideoGatewayAdapter(repository, mapper);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public TransactionTemplate uploadTransactions(PlatformTransactionManager manager) {
+        var template = new TransactionTemplate(manager);
+        template.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED);
+        template.setTimeout(180);
+        return template;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public AwsCredentialsProvider uploadCredentials(@Value("${upload.aws-profile:}") String profile) {
+        return profile.isBlank() ? DefaultCredentialsProvider.builder().build() : ProfileCredentialsProvider.create(profile);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public S3Client uploadS3(AwsCredentialsProvider credentials, @Value("${upload.region:us-east-1}") String region) {
+        return S3Client.builder().region(Region.of(region)).credentialsProvider(credentials)
+                .overrideConfiguration(c -> c.apiCallTimeout(Duration.ofSeconds(120)).apiCallAttemptTimeout(Duration.ofSeconds(60))).build();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public SqsClient uploadSqs(AwsCredentialsProvider credentials, @Value("${upload.region:us-east-1}") String region) {
+        return SqsClient.builder().region(Region.of(region)).credentialsProvider(credentials)
+                .overrideConfiguration(c -> c.apiCallTimeout(Duration.ofSeconds(20)).apiCallAttemptTimeout(Duration.ofSeconds(10))).build();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public UploadFiles uploadFiles(@Value("${upload.temp-directory:.local/uploads}") Path directory,
+                                   @Value("${upload.concurrency:2}") int concurrency,
+                                   @Value("${upload.disk-reserve-bytes:500000000}") long reserve, Clock clock) throws java.io.IOException {
+        return new UploadFiles(directory, concurrency, reserve, clock);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public MultipartSpool multipartSpool(UploadFiles files) throws java.io.IOException {
+        return new MultipartSpool(files.directory());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public jakarta.servlet.MultipartConfigElement uploadMultipartConfig(MultipartSpool spool) {
+        // Use the same filesystem whose free space is checked before multipart parsing.
+        return new jakarta.servlet.MultipartConfigElement(spool.directory().toString(), 100_000_000, 101_000_000, 0);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public UploadGateway uploadGateway(SpringVideoRepository repository, VideoMapper mapper,
+                                       TransactionTemplate uploadTransactions, JsonMapper json) {
+        return new UploadGatewayAdapter(repository, mapper, uploadTransactions, json);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public OriginalStorageGateway originalStorage(S3Client client, @Value("${upload.bucket}") String bucket) {
+        return new S3OriginalStorageAdapter(client, bucket);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    public UploadVideoUseCase uploadVideoUseCase(UploadGateway gateway, OriginalStorageGateway storage,
+            @Value("${upload.bucket}") String bucket, @Value("${upload.lease-seconds:300}") long lease) {
+        if (lease <= 120) throw new IllegalArgumentException("Upload lease must exceed the S3 call timeout");
+        return new UploadVideoUseCase(gateway, storage, bucket, Duration.ofSeconds(lease));
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = {"upload.enabled", "upload.publisher-enabled"}, havingValue = "true")
+    public OutboxDispatcher outboxDispatcher(SpringOutboxRepository repository, TransactionTemplate uploadTransactions,
+            SqsClient client, @Value("${upload.queue-url}") String queueUrl) {
+        return new OutboxDispatcher(repository, uploadTransactions, client, queueUrl);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = {"upload.enabled", "upload.cleanup-enabled"}, havingValue = "true")
+    public UploadReconciler uploadReconciler(SpringVideoRepository repository, TransactionTemplate uploadTransactions,
+            S3Client client, @Value("${upload.bucket}") String bucket, Clock clock, UploadFiles files) {
+        return new UploadReconciler(repository, uploadTransactions, client, bucket, clock, files);
     }
 }

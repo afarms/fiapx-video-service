@@ -31,6 +31,18 @@ class VideoTest {
         assertEquals(100_000_000, video.sizeBytes());
     }
 
+    @Test
+    void queuedCopyPreservesMetadataAndDoesNotMutateOriginal() {
+        var original = video("sample.mp4", "key", 1);
+        var queued = original.queued();
+        assertEquals("UPLOADING", original.status());
+        assertEquals("QUEUED", queued.status());
+        assertEquals(VideoStatus.QUEUED, queued.state());
+        assertEquals(new Video(ID, OWNER, "sample.mp4", "key", 1, CREATED, VideoStatus.QUEUED), queued);
+        assertEquals(queued, queued.queued());
+        assertThrows(NullPointerException.class, () -> new Video(ID, OWNER, "sample.mp4", "key", 1, CREATED, null));
+    }
+
     @ParameterizedTest
     @ValueSource(longs = {0, -1, 100_000_001L, Long.MAX_VALUE})
     void rejectsInvalidSize(long size) {

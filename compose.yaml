@@ -33,6 +33,13 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-fiapx-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-fiapx-api}
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75.0"
+      UPLOAD_ENABLED: ${UPLOAD_ENABLED:-false}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      MEDIA_BUCKET_NAME: ${MEDIA_BUCKET_NAME:-}
+      PROCESSING_QUEUE_URL: ${PROCESSING_QUEUE_URL:-}
+      UPLOAD_PUBLISHER_ENABLED: ${UPLOAD_PUBLISHER_ENABLED:-false}
+      UPLOAD_CLEANUP_ENABLED: ${UPLOAD_CLEANUP_ENABLED:-true}
+      UPLOAD_TEMP_DIRECTORY: /app/.local/uploads
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:${SERVER_PORT:-8080}"
     depends_on:
@@ -40,6 +47,7 @@ services:
         condition: service_healthy
     mem_limit: 512m
     volumes:
+      - upload-temp:/app/.local
       - type: bind
         source: ${IDENTITY_PUBLIC_KEY_PATH:-./.local/keys/identity-public.pem}
         target: /run/keys/identity-public.pem
@@ -56,3 +64,4 @@ services:
     stop_grace_period: 30s
 volumes:
   postgres-data:
+  upload-temp:

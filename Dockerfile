@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/root/.m2 ./mvnw -B -ntp -DskipTests package
 FROM eclipse-temurin:21.0.12_8-jre-alpine-3.24 AS runtime
 WORKDIR /app
 RUN addgroup -S -g 10001 app && adduser -S -D -H -u 10001 -G app app
+RUN mkdir -p /app/.local/uploads && chown -R 10001:10001 /app/.local
 COPY --from=build --chown=10001:10001 /workspace/target/app.jar /app/app.jar
 USER 10001:10001
 EXPOSE 8080
