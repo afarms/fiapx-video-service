@@ -53,6 +53,7 @@ class UploadPostgresIT {
     boolean schemaCreated;
     boolean upgradeCreated;
     boolean resultsOnly;
+    boolean downloadsEnabled;
 
     /** Test-only barrier after predicate evaluation, before the production SELECT acquires its row lock. */
     public static class CleanupSnapshotInspector implements org.hibernate.resource.jdbc.spi.StatementInspector {
@@ -73,6 +74,9 @@ class UploadPostgresIT {
     static class Boundaries {
         static final Set<UUID> inactive=java.util.concurrent.ConcurrentHashMap.newKeySet();
         @Bean @Primary S3Client testS3() { return mock(S3Client.class); }
+        @Bean @Primary br.com.fiap.fiapx.video.infrastructure.storage.DownloadStorage testDownloadStorage(S3Client client) {
+            return new br.com.fiap.fiapx.video.infrastructure.storage.S3DownloadStorage(client);
+        }
         @Bean @Primary SqsClient testSqs() {
             var sqs=mock(SqsClient.class);
             when(sqs.receiveMessage(any(ReceiveMessageRequest.class))).thenReturn(ReceiveMessageResponse.builder().build());
@@ -115,6 +119,7 @@ class UploadPostgresIT {
                 "--identity.service-key=" + "x".repeat(32), "--identity.jwt.public-key=" + publicKey.toUri(),
                 "--upload.enabled="+!resultsOnly, "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
                 "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false", "--results.enabled="+resultsOnly,
+                "--download.enabled="+downloadsEnabled, "--download.heartbeat-seconds=1",
                 "--results.queue-url=https://sqs.us-east-1.amazonaws.com/123456789012/events",
                 "--upload.temp-directory=" + temporary.resolve("staging"), "--springdoc.api-docs.enabled=false");
         jdbc = context.getBean(JdbcTemplate.class);
@@ -546,6 +551,157 @@ class UploadPostgresIT {
         context.close(); startApplication();
         assertTrue(downloads().renew(video.id(),lease.token(),Duration.ofSeconds(120)).isPresent());
         downloads().release(video.id(),lease.token());
+    }
+
+    @Test @Order(21) void httpDownloadReturnsWholeResultAndRejectsUnauthorizedRequestsBeforeS3() throws Exception {
+        context.close(); downloadsEnabled=true; startApplication();
+        var video=downloadVideo();
+        byte[] png=Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=");
+        var zipBytes=new java.io.ByteArrayOutputStream();
+        try(var zip=new java.util.zip.ZipOutputStream(zipBytes)) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("frames/frame-000001.png")); zip.write(png); zip.closeEntry();
+        }
+        byte[] bytes=zipBytes.toByteArray();
+        jdbc.update("UPDATE videos SET result_size_bytes=? WHERE id=?",bytes.length,video.id());
+        var client=context.getBean("testS3",S3Client.class);
+        var aborted=new java.util.concurrent.atomic.AtomicInteger();
+        when(client.getObject(any(software.amazon.awssdk.services.s3.model.GetObjectRequest.class))).thenAnswer(call ->
+                new software.amazon.awssdk.core.ResponseInputStream<>(
+                        software.amazon.awssdk.services.s3.model.GetObjectResponse.builder().contentLength((long)bytes.length).build(),
+                        software.amazon.awssdk.http.AbortableInputStream.create(new java.io.ByteArrayInputStream(bytes),aborted::incrementAndGet)));
+        String path=base+"/videos/"+video.id()+"/download";
+        var response=http.send(HttpRequest.newBuilder(URI.create(path)).header("Authorization","Bearer "+video.owner())
+                .header("Range","bytes=50-").GET().build(),HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(200,response.statusCode()); assertArrayEquals(bytes,response.body());
+        assertEquals(Integer.toString(bytes.length),response.headers().firstValue("Content-Length").orElseThrow());
+        try(var zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(response.body()))) {
+            assertEquals("frames/frame-000001.png",zip.getNextEntry().getName()); assertArrayEquals(png,zip.readAllBytes());
+            assertNull(zip.getNextEntry());
+        }
+        assertEquals("application/zip",response.headers().firstValue("Content-Type").orElseThrow());
+        assertEquals("none",response.headers().firstValue("Accept-Ranges").orElseThrow());
+        assertEquals("private, no-store",response.headers().firstValue("Cache-Control").orElseThrow());
+        assertEquals("attachment; filename=\"frames-"+video.id()+".zip\"",response.headers().firstValue("Content-Disposition").orElseThrow());
+        awaitNoDownloadLease(video); assertTrue(aborted.get()>0);
+        clearInvocations(client);
+        assertEquals(401,http.send(HttpRequest.newBuilder(URI.create(path)).GET().build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(404,downloadHttp(UUID.randomUUID(),video.id()).statusCode());
+        assertEquals(404,downloadHttp(video.owner(),UUID.randomUUID()).statusCode());
+        Boundaries.inactive.add(video.owner());
+        try { assertEquals(403,downloadHttp(video.owner(),video.id()).statusCode()); }
+        finally { Boundaries.inactive.remove(video.owner()); }
+        var pending=accepted(); assertEquals(409,downloadHttp(pending.owner(),pending.id()).statusCode());
+        expireDownload(video); assertEquals(410,downloadHttp(video.owner(),video.id()).statusCode());
+        assertEquals("COMPLETED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,video.id()));
+        verify(client,never()).getObject(any(software.amazon.awssdk.services.s3.model.GetObjectRequest.class));
+    }
+
+    HttpResponse<byte[]> downloadHttp(UUID account,UUID video) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create(base+"/videos/"+video+"/download"))
+                .timeout(Duration.ofSeconds(10)).header("Authorization","Bearer "+account).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
+    }
+    void awaitNoDownloadLease(Accepted video) throws Exception {
+        long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while(System.nanoTime()<deadline) {
+            if(jdbc.queryForObject("SELECT count(*) FROM video_download_leases WHERE video_id=?",Integer.class,video.id())==0) return;
+            Thread.sleep(20);
+        }
+        fail("Download lease was not released");
+    }
+
+    @Test @Order(22) void missingS3ResultReturnsUnavailableAndReleasesLease() throws Exception {
+        var video=downloadVideo(); var client=context.getBean("testS3",S3Client.class);
+        when(client.getObject(any(software.amazon.awssdk.services.s3.model.GetObjectRequest.class)))
+                .thenThrow(software.amazon.awssdk.services.s3.model.NoSuchKeyException.builder().message("private/key").build());
+        var response=downloadHttp(video.owner(),video.id()); assertEquals(503,response.statusCode());
+        assertFalse(new String(response.body(),java.nio.charset.StandardCharsets.UTF_8).contains("private/key"));
+        awaitNoDownloadLease(video);
+        assertEquals("COMPLETED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,video.id()));
+    }
+
+    @Test @Order(23) void admittedHttpTransferRenewsAfterExpiryAndBlocksCleanupUntilFinished() throws Exception {
+        var video=downloadVideo(); var client=context.getBean("testS3",S3Client.class);
+        var opened=new java.util.concurrent.CountDownLatch(1); var unblock=new java.util.concurrent.CountDownLatch(1);
+        var input=new java.io.ByteArrayInputStream(new byte[100]) {
+            @Override public synchronized int read(byte[] bytes,int offset,int length) {
+                opened.countDown();
+                try { if(!unblock.await(8,java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("Read barrier timed out"); }
+                catch(InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
+                return super.read(bytes,offset,length);
+            }
+        };
+        when(client.getObject(any(software.amazon.awssdk.services.s3.model.GetObjectRequest.class))).thenReturn(
+                new software.amazon.awssdk.core.ResponseInputStream<>(
+                        software.amazon.awssdk.services.s3.model.GetObjectResponse.builder().contentLength(100L).build(),
+                        software.amazon.awssdk.http.AbortableInputStream.create(input,unblock::countDown)));
+        var future=http.sendAsync(HttpRequest.newBuilder(URI.create(base+"/videos/"+video.id()+"/download"))
+                .header("Authorization","Bearer "+video.owner()).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
+        try {
+            assertTrue(opened.await(5,java.util.concurrent.TimeUnit.SECONDS));
+            var initial=jdbc.queryForObject("SELECT valid_until FROM video_download_leases WHERE video_id=?",java.sql.Timestamp.class,video.id());
+            expireDownload(video); assertTrue(cleanupFor(video).isEmpty());
+            long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5); boolean renewed=false;
+            while(System.nanoTime()<deadline) {
+                renewed=jdbc.queryForObject("SELECT valid_until>? FROM video_download_leases WHERE video_id=?",Boolean.class,initial,video.id());
+                if(renewed) break; Thread.sleep(20);
+            }
+            assertTrue(renewed,"HTTP transfer must renew its lease after artifact expiration");
+            assertTrue(cleanupFor(video).isEmpty());
+        } finally { unblock.countDown(); }
+        assertEquals(200,future.get(5,java.util.concurrent.TimeUnit.SECONDS).statusCode());
+        awaitNoDownloadLease(video); assertTrue(cleanupFor(video).isPresent());
+        assertEquals(410,downloadHttp(video.owner(),video.id()).statusCode());
+    }
+
+    @Test @Order(24) void realClientDisconnectAbortsS3WithoutReadingWholeLargeResult() throws Exception {
+        var video=downloadVideo(); long size=100_000_000L;
+        jdbc.update("UPDATE videos SET result_size_bytes=? WHERE id=?",size,video.id());
+        var read=new java.util.concurrent.atomic.AtomicLong(); var aborted=new java.util.concurrent.atomic.AtomicBoolean();
+        var input=new java.io.InputStream() {
+            public int read() { throw new java.lang.UnsupportedOperationException(); }
+            public int read(byte[] buffer,int offset,int length) throws java.io.IOException {
+                if(aborted.get()) throw new java.io.IOException("Aborted");
+                assertTrue(length<=65536); long remaining=size-read.get(); if(remaining==0) return -1;
+                int count=(int)Math.min(length,remaining); Arrays.fill(buffer,offset,offset+count,(byte)7); read.addAndGet(count); return count;
+            }
+        };
+        var client=context.getBean("testS3",S3Client.class);
+        when(client.getObject(any(software.amazon.awssdk.services.s3.model.GetObjectRequest.class))).thenReturn(
+                new software.amazon.awssdk.core.ResponseInputStream<>(
+                        software.amazon.awssdk.services.s3.model.GetObjectResponse.builder().contentLength(size).build(),
+                        software.amazon.awssdk.http.AbortableInputStream.create(input,()->aborted.set(true))));
+        try(var socket=new java.net.Socket("127.0.0.1",URI.create(base).getPort())) {
+            socket.setSoTimeout(5000); socket.setReceiveBufferSize(4096);
+            socket.getOutputStream().write(("GET /videos/"+video.id()+"/download HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer "+video.owner()+"\r\n\r\n")
+                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            assertEquals(4096,socket.getInputStream().readNBytes(4096).length);
+            socket.setSoLinger(true,0);
+        }
+        awaitNoDownloadLease(video); assertTrue(aborted.get()); assertTrue(read.get()<size);
+    }
+
+    @Test @Order(25) void failedUpstreamAfterHeadersTerminatesIncompleteHttpBody() throws Exception {
+        var video=downloadVideo(); long size=1_000_000;
+        jdbc.update("UPDATE videos SET result_size_bytes=? WHERE id=?",size,video.id());
+        var calls=new java.util.concurrent.atomic.AtomicInteger();
+        var input=new java.io.InputStream() {
+            public int read() { throw new java.lang.UnsupportedOperationException(); }
+            public int read(byte[] bytes,int offset,int length) throws java.io.IOException {
+                if(calls.incrementAndGet()>1) throw new java.io.IOException("private upstream failure");
+                Arrays.fill(bytes,offset,offset+length,(byte)9); return length;
+            }
+        };
+        when(context.getBean("testS3",S3Client.class).getObject(any(software.amazon.awssdk.services.s3.model.GetObjectRequest.class))).thenReturn(
+                new software.amazon.awssdk.core.ResponseInputStream<>(
+                        software.amazon.awssdk.services.s3.model.GetObjectResponse.builder().contentLength(size).build(),
+                        software.amazon.awssdk.http.AbortableInputStream.create(input)));
+        var future=http.sendAsync(HttpRequest.newBuilder(URI.create(base+"/videos/"+video.id()+"/download"))
+                .header("Authorization","Bearer "+video.owner()).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
+        try {
+            var failure=assertThrows(java.util.concurrent.ExecutionException.class,()->future.get(5,java.util.concurrent.TimeUnit.SECONDS));
+            assertInstanceOf(java.io.IOException.class,failure.getCause());
+            awaitNoDownloadLease(video);
+        } finally { future.cancel(true); }
     }
 
     @Test @Order(20) void cleanupRechecksLeaseCommittedAfterItsSelectionSnapshot() throws Exception {

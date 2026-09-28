@@ -39,6 +39,12 @@ upload:
   processing-reconcile-enabled: ${PROCESSING_RECONCILE_ENABLED:false}
   processing-reconcile-delay-ms: ${PROCESSING_RECONCILE_DELAY_MS:60000}
   cleanup-delay-ms: ${UPLOAD_CLEANUP_DELAY_MS:60000}
+download:
+  enabled: ${DOWNLOAD_ENABLED:false}
+  concurrency: ${DOWNLOAD_CONCURRENCY:2}
+  lease-seconds: ${DOWNLOAD_LEASE_SECONDS:120}
+  heartbeat-seconds: ${DOWNLOAD_HEARTBEAT_SECONDS:30}
+  maximum-seconds: ${DOWNLOAD_MAXIMUM_SECONDS:1800}
 results:
   enabled: ${PROCESSING_RESULTS_ENABLED:false}
   queue-url: ${VIDEOS_EVENTS_QUEUE_URL:}

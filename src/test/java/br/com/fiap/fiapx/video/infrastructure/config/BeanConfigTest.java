@@ -16,6 +16,19 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 
 class BeanConfigTest {
+    @Test void downloadCanBeComposedWithoutUploadOrMessaging() throws Exception {
+        var config=new BeanConfig();
+        var gateway=mock(br.com.fiap.fiapx.video.core.gateway.DownloadGateway.class);
+        var authorize=mock(br.com.fiap.fiapx.video.core.usecase.AuthorizeVideoAccessUseCase.class);
+        assertNotNull(config.downloadVideoUseCase(authorize,gateway,120,1800));
+        var credentials=software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(
+                software.amazon.awssdk.auth.credentials.AwsBasicCredentials.create("test","test"));
+        try(var storage=(br.com.fiap.fiapx.video.infrastructure.storage.S3DownloadStorage)config.downloadStorage(credentials,"us-east-1");
+            var transfers=config.downloadTransfers(gateway,storage,2,120,1800,30)) {
+            assertNotNull(transfers);
+        }
+        verifyNoInteractions(gateway);
+    }
     @Test void downloadReservationsUseTheirOwnTransactionBoundary() {
         var config=new BeanConfig();
         assertNotNull(config.downloadGateway(mock(br.com.fiap.fiapx.video.infrastructure.persistence.repository.SpringDownloadRepository.class),
