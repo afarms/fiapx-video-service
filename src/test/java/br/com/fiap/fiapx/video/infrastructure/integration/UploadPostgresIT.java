@@ -54,6 +54,7 @@ class UploadPostgresIT {
     boolean upgradeCreated;
     boolean resultsOnly;
     boolean downloadsEnabled;
+    boolean cleanupOnly;
 
     /** Test-only barrier after predicate evaluation, before the production SELECT acquires its row lock. */
     public static class CleanupSnapshotInspector implements org.hibernate.resource.jdbc.spi.StatementInspector {
@@ -76,6 +77,9 @@ class UploadPostgresIT {
         @Bean @Primary S3Client testS3() { return mock(S3Client.class); }
         @Bean @Primary br.com.fiap.fiapx.video.infrastructure.storage.DownloadStorage testDownloadStorage(S3Client client) {
             return new br.com.fiap.fiapx.video.infrastructure.storage.S3DownloadStorage(client);
+        }
+        @Bean @Primary ResultCleanupStorageGateway testCleanupStorage(S3Client client) {
+            return new br.com.fiap.fiapx.video.infrastructure.storage.S3ResultCleanupStorage(client);
         }
         @Bean @Primary SqsClient testSqs() {
             var sqs=mock(SqsClient.class);
@@ -117,9 +121,10 @@ class UploadPostgresIT {
                 "--spring.jpa.properties.hibernate.default_schema=" + schema,
                 "--spring.jpa.properties.hibernate.session_factory.statement_inspector=" + CleanupSnapshotInspector.class.getName(),
                 "--identity.service-key=" + "x".repeat(32), "--identity.jwt.public-key=" + publicKey.toUri(),
-                "--upload.enabled="+!resultsOnly, "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
-                "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false", "--results.enabled="+resultsOnly,
-                "--download.enabled="+downloadsEnabled, "--download.heartbeat-seconds=1",
+                "--upload.enabled="+(!resultsOnly&&!cleanupOnly), "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
+                "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false", "--results.enabled="+(resultsOnly&&!cleanupOnly),
+                "--download.enabled="+(downloadsEnabled&&!cleanupOnly), "--download.heartbeat-seconds=1",
+                "--download.cleanup-enabled="+cleanupOnly, "--download.cleanup-delay-ms=1000",
                 "--results.queue-url=https://sqs.us-east-1.amazonaws.com/123456789012/events",
                 "--upload.temp-directory=" + temporary.resolve("staging"), "--springdoc.api-docs.enabled=false");
         jdbc = context.getBean(JdbcTemplate.class);
@@ -702,6 +707,78 @@ class UploadPostgresIT {
             assertInstanceOf(java.io.IOException.class,failure.getCause());
             awaitNoDownloadLease(video);
         } finally { future.cancel(true); }
+    }
+
+    br.com.fiap.fiapx.video.core.usecase.CleanupExpiredResultsUseCase cleaner(DownloadGateway gateway) {
+        return new br.com.fiap.fiapx.video.core.usecase.CleanupExpiredResultsUseCase(gateway,
+                context.getBean("testCleanupStorage",ResultCleanupStorageGateway.class),Duration.ofSeconds(120),Duration.ofSeconds(300),1,System::nanoTime);
+    }
+    void onlyCleanupCandidate(Accepted video) {
+        jdbc.update("UPDATE videos SET result_cleanup_available_at=clock_timestamp()+interval '1 day' WHERE id<>?",video.id());
+    }
+    @Test @Order(26) void cleanupWaitsForDownloadThenRetriesFailureAcrossRestartWithoutLosingHistory() throws Exception {
+        var video=downloadVideo(); onlyCleanupCandidate(video);
+        var lease=downloads().reserve(video.id(),video.owner(),Duration.ofSeconds(120),Duration.ofSeconds(1800)); expireDownload(video);
+        var history=jdbc.queryForMap("SELECT status,completed_at,expires_at,result_bucket,result_object_key,result_size_bytes,result_sha256 FROM videos WHERE id=?",video.id());
+        var client=context.getBean("testS3",S3Client.class);
+        assertEquals(0,cleaner(downloads()).execute());
+        verify(client,never()).deleteObject(any(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class));
+        downloads().release(video.id(),lease.token());
+        when(client.deleteObject(any(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class)))
+                .thenThrow(software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(503).build());
+        assertEquals(0,cleaner(downloads()).execute());
+        assertTrue(jdbc.queryForObject("SELECT result_deleted_at IS NULL AND result_cleanup_token IS NULL AND result_cleanup_available_at>clock_timestamp() FROM videos WHERE id=?",Boolean.class,video.id()));
+        assertEquals(0,cleaner(downloads()).execute());
+        context.close(); startApplication();
+        jdbc.update("UPDATE videos SET result_cleanup_available_at=clock_timestamp()-interval '1 second' WHERE id=?",video.id());
+        assertEquals(1,cleaner(downloads()).execute()); assertEquals(0,cleaner(downloads()).execute());
+        assertNotNull(jdbc.queryForObject("SELECT result_deleted_at FROM videos WHERE id=?",java.sql.Timestamp.class,video.id()));
+        assertEquals(history,jdbc.queryForMap("SELECT status,completed_at,expires_at,result_bucket,result_object_key,result_size_bytes,result_sha256 FROM videos WHERE id=?",video.id()));
+    }
+    @Test @Order(27) void crashAfterDeleteRepeatsAbsentObjectAndFencesOldClaim() throws Exception {
+        var video=downloadVideo(); expireDownload(video); onlyCleanupCandidate(video);
+        clearInvocations(context.getBean("testS3",S3Client.class));
+        var failing=spy(downloads());
+        doThrow(new IllegalStateException("database unavailable after S3 deletion")).when(failing).deleted(any(),any());
+        doThrow(new IllegalStateException("database unavailable")).when(failing).retryCleanup(any(),any(),any());
+        assertThrows(IllegalStateException.class,()->cleaner(failing).execute());
+        var token=jdbc.queryForObject("SELECT result_cleanup_token FROM videos WHERE id=?",UUID.class,video.id()); assertNotNull(token);
+        verify(context.getBean("testS3",S3Client.class)).deleteObject(any(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class));
+        context.close(); startApplication();
+        jdbc.update("UPDATE videos SET result_cleanup_until=clock_timestamp()-interval '1 second' WHERE id=?",video.id());
+        when(context.getBean("testS3",S3Client.class).deleteObject(any(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class)))
+                .thenThrow(software.amazon.awssdk.services.s3.model.NoSuchKeyException.builder().build());
+        assertEquals(1,cleaner(downloads()).execute()); assertFalse(downloads().deleted(video.id(),token));
+    }
+    @Test @Order(28) void simultaneousCleanersHaveOneDeleteOutsideDatabaseTransaction() throws Exception {
+        var video=downloadVideo(); expireDownload(video); onlyCleanupCandidate(video);
+        var deleting=new java.util.concurrent.CountDownLatch(1); var unblock=new java.util.concurrent.CountDownLatch(1);
+        var client=context.getBean("testS3",S3Client.class); reset(client);
+        when(client.deleteObject(any(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class))).thenAnswer(call->{
+            assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            deleting.countDown(); assertTrue(unblock.await(5,java.util.concurrent.TimeUnit.SECONDS));
+            return software.amazon.awssdk.services.s3.model.DeleteObjectResponse.builder().build();
+        });
+        try(var executor=java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var first=executor.submit(()->cleaner(downloads()).execute());
+            try { assertTrue(deleting.await(5,java.util.concurrent.TimeUnit.SECONDS)); assertEquals(0,cleaner(downloads()).execute()); }
+            finally { unblock.countDown(); }
+            assertEquals(1,first.get(5,java.util.concurrent.TimeUnit.SECONDS));
+        }
+        verify(client).deleteObject(any(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class));
+    }
+    @Test @Order(29) void cleanupSchedulerRunsWithUploadDownloadAndConsumersDisabled() throws Exception {
+        var video=downloadVideo(); expireDownload(video); onlyCleanupCandidate(video);
+        context.close(); cleanupOnly=true; startApplication();
+        assertTrue(context.getBeansOfType(UploadGateway.class).isEmpty());
+        assertTrue(context.getBeansOfType(br.com.fiap.fiapx.video.infrastructure.web.DownloadTransfers.class).isEmpty());
+        assertTrue(context.getBeansOfType(ProcessingResultsConsumer.class).isEmpty());
+        long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5); boolean deleted=false;
+        while(System.nanoTime()<deadline) {
+            deleted=jdbc.queryForObject("SELECT result_deleted_at IS NOT NULL FROM videos WHERE id=?",Boolean.class,video.id());
+            if(deleted) break; Thread.sleep(20);
+        }
+        assertTrue(deleted); verify(context.getBean("testS3",S3Client.class)).deleteObject(any(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class));
     }
 
     @Test @Order(20) void cleanupRechecksLeaseCommittedAfterItsSelectionSnapshot() throws Exception {

@@ -59,6 +59,42 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 @EnableScheduling
 public class BeanConfig {
     @Bean
+    @ConditionalOnProperty(name = "download.cleanup-enabled", havingValue = "true")
+    public br.com.fiap.fiapx.video.core.gateway.ResultCleanupStorageGateway resultCleanupStorage(
+            AwsCredentialsProvider credentials, @Value("${upload.region:us-east-1}") String region) {
+        return new S3ResultCleanupStorage(S3Client.builder().region(Region.of(region)).credentialsProvider(credentials)
+                .httpClientBuilder(software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
+                        .connectionTimeout(Duration.ofSeconds(3)).socketTimeout(Duration.ofSeconds(10))
+                        .connectionAcquisitionTimeout(Duration.ofSeconds(3))).build());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "download.cleanup-enabled", havingValue = "true")
+    public br.com.fiap.fiapx.video.core.usecase.CleanupExpiredResultsUseCase cleanupExpiredResultsUseCase(
+            br.com.fiap.fiapx.video.core.gateway.DownloadGateway gateway,
+            br.com.fiap.fiapx.video.core.gateway.ResultCleanupStorageGateway storage,
+            @Value("${download.cleanup-lease-seconds:120}") long lease,
+            @Value("${download.cleanup-retry-seconds:300}") long retry,
+            @Value("${download.cleanup-batch-size:10}") int batch) {
+        return new br.com.fiap.fiapx.video.core.usecase.CleanupExpiredResultsUseCase(gateway, storage,
+                Duration.ofSeconds(lease), Duration.ofSeconds(retry), batch, System::nanoTime);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "download.cleanup-enabled", havingValue = "true")
+    public ThreadPoolTaskScheduler resultCleanupScheduler(@Value("${download.cleanup-delay-ms:60000}") long delay) {
+        if (delay < 1000) throw new IllegalArgumentException("Cleanup delay must be at least 1000ms");
+        var scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1); scheduler.setThreadNamePrefix("video-result-cleanup-");
+        return scheduler;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "download.cleanup-enabled", havingValue = "true")
+    public ExpiredResultCleanup expiredResultCleanup(br.com.fiap.fiapx.video.core.usecase.CleanupExpiredResultsUseCase cleanup) {
+        return new ExpiredResultCleanup(cleanup);
+    }
+    @Bean
     @ConditionalOnProperty(name = "download.enabled", havingValue = "true")
     public br.com.fiap.fiapx.video.core.usecase.DownloadVideoUseCase downloadVideoUseCase(
             AuthorizeVideoAccessUseCase authorize, br.com.fiap.fiapx.video.core.gateway.DownloadGateway gateway,
@@ -134,7 +170,7 @@ public class BeanConfig {
     }
 
     @Bean
-    @ConditionalOnProperty(name="results.enabled",havingValue="true")
+    @ConditionalOnExpression("${results.enabled:false} or ${download.cleanup-enabled:false}")
     public ThreadPoolTaskScheduler taskScheduler() {
         var scheduler=new ThreadPoolTaskScheduler(); scheduler.setPoolSize(3); scheduler.setThreadNamePrefix("video-messaging-");
         return scheduler;
@@ -237,7 +273,7 @@ public class BeanConfig {
     }
 
     @Bean
-    @ConditionalOnExpression("${upload.enabled:false} or ${results.enabled:false} or ${download.enabled:false}")
+    @ConditionalOnExpression("${upload.enabled:false} or ${results.enabled:false} or ${download.enabled:false} or ${download.cleanup-enabled:false}")
     public AwsCredentialsProvider uploadCredentials(@Value("${upload.aws-profile:}") String profile) {
         return profile.isBlank() ? DefaultCredentialsProvider.builder().build() : ProfileCredentialsProvider.create(profile);
     }

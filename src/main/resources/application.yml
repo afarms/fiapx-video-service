@@ -40,6 +40,11 @@ upload:
   processing-reconcile-delay-ms: ${PROCESSING_RECONCILE_DELAY_MS:60000}
   cleanup-delay-ms: ${UPLOAD_CLEANUP_DELAY_MS:60000}
 download:
+  cleanup-enabled: ${RESULT_CLEANUP_ENABLED:false}
+  cleanup-delay-ms: ${RESULT_CLEANUP_DELAY_MS:60000}
+  cleanup-lease-seconds: ${RESULT_CLEANUP_LEASE_SECONDS:120}
+  cleanup-retry-seconds: ${RESULT_CLEANUP_RETRY_SECONDS:300}
+  cleanup-batch-size: ${RESULT_CLEANUP_BATCH_SIZE:10}
   enabled: ${DOWNLOAD_ENABLED:false}
   concurrency: ${DOWNLOAD_CONCURRENCY:2}
   lease-seconds: ${DOWNLOAD_LEASE_SECONDS:120}

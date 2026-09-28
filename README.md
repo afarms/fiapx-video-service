@@ -4,7 +4,7 @@ Domínio responsável pela submissão de vídeos, metadados, estado público do 
 
 ## Build e testes unitários
 
-O [download autenticado de ZIP e suas reservas](docs/download-retention.md) está implementado, desativado por padrão (`DOWNLOAD_ENABLED=false`). Inclui streaming completo, controle de prazo e proteção contra limpeza concorrente. A exclusão assíncrona no S3 ainda será integrada.
+O [download autenticado de ZIP e suas reservas](docs/download-retention.md) está implementado, desativado por padrão (`DOWNLOAD_ENABLED=false`). Inclui streaming completo, controle de prazo e proteção contra limpeza concorrente. A exclusão assíncrona de ZIPs expirados está implementada e também desativada por padrão (`RESULT_CLEANUP_ENABLED=false`).
 
 Pré-requisitos: JDK 21 e acesso ao Maven Central no primeiro build. No Git Bash, a partir da raiz:
 
