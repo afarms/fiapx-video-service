@@ -2,6 +2,10 @@
 MVNW := bash ./mvnw
 ENV_FILE := $(CURDIR)/.env
 .DEFAULT_GOAL := install
+.PHONY: integration-flow
+
+integration-flow:
+	bash scripts/test-processing-flow.sh
 
 .PHONY: install verify integration integration-aws image config-check up down run package
 
