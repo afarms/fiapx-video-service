@@ -51,6 +51,13 @@ public class VideoEntity implements Persistable<UUID> {
     @Column(name = "accepted_at")
     private Instant acceptedAt;
 
+    @Column(name="processing_version",nullable=false)
+    private long processingVersion;
+    @Column(name="completed_at") private Instant completedAt;
+    @Column(name="expires_at") private Instant expiresAt;
+    @Column(name="failed_at") private Instant failedAt;
+    @Column(name="failure_code",length=64) private String failureCode;
+
     @Transient
     private boolean newEntity = true;
 
@@ -93,6 +100,11 @@ public class VideoEntity implements Persistable<UUID> {
     public UUID getUploadAttemptId() { return uploadAttemptId; }
     public Instant getUploadLeaseUntil() { return uploadLeaseUntil; }
     public Instant getAcceptedAt() { return acceptedAt; }
+    public long getProcessingVersion() { return processingVersion; }
+    public Instant getCompletedAt() { return completedAt; }
+    public Instant getExpiresAt() { return expiresAt; }
+    public Instant getFailedAt() { return failedAt; }
+    public String getFailureCode() { return failureCode; }
 
     @Override
     public boolean isNew() { return newEntity; }

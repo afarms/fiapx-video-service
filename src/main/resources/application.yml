@@ -37,6 +37,10 @@ upload:
   lease-seconds: ${UPLOAD_LEASE_SECONDS:300}
   publisher-delay-ms: ${UPLOAD_PUBLISHER_DELAY_MS:5000}
   cleanup-delay-ms: ${UPLOAD_CLEANUP_DELAY_MS:60000}
+results:
+  enabled: ${PROCESSING_RESULTS_ENABLED:false}
+  queue-url: ${VIDEOS_EVENTS_QUEUE_URL:}
+  poll-delay-ms: ${PROCESSING_RESULTS_POLL_DELAY_MS:1000}
 identity:
   url: ${IDENTITY_URL:http://localhost:8081}
   service-key: ${IDENTITY_SERVICE_KEY}

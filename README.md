@@ -1,6 +1,6 @@
 # FIAP X — Serviço de vídeos
 
-Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui migrations Liquibase e testes unitários. Consultas autenticadas e upload com idempotência, S3 e outbox/SQS estão implementados, com publicação desativada por padrão. O produtor foi validado com PostgreSQL e S3/SQS reais; processamento e download permanecem pendentes. Consulte [upload e recuperação](docs/upload.md).
+Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui migrations Liquibase e testes unitários. Consultas autenticadas e upload com idempotência, S3 e outbox/SQS estão implementados, com publicação desativada por padrão. O produtor foi validado com PostgreSQL e S3/SQS reais. Consumo de resultados e estados PROCESSING/COMPLETED/FAILED estão implementados, com consumo desativado por padrão; validação cloud do fluxo de processamento e download permanecem pendentes. Consulte [upload e recuperação](docs/upload.md) e [resultados de processamento](docs/processing-results.md).
 
 ## Build e testes unitários
 
@@ -55,7 +55,7 @@ O alvo run carrega o `.env` com Bash e inicia spring-boot:run; não depende de p
 
 Saúde: `/actuator/health`, `/actuator/health/liveness` e `/actuator/health/readiness`. Readiness inclui o banco; essas rotas são fornecidas pelo Actuator, sem controllers próprios.
 
-O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica 001 e 002 na inicialização. A migration 002 acrescenta UPLOADING/QUEUED, intenção permanente, tentativas e outbox, preservando registros legados. Registrar metadados não confirma aceite: é necessário original persistido e commit de QUEUED/outbox. Resultados terão novas migrations.
+O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica 001, 002 e 003 na inicialização. A migration 002 acrescenta UPLOADING/QUEUED, intenção permanente, tentativas e outbox, preservando registros legados. Registrar metadados não confirma aceite: é necessário original persistido e commit de QUEUED/outbox. A migration 003 acrescenta estados de processamento, versão, inbox e metadados de resultado, preservando o recibo original de aceite.
 
 ```bash
 docker compose logs --tail=100 video

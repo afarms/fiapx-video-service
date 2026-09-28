@@ -20,7 +20,8 @@ public class VideoMapper {
         }
         return new Video(entity.getId(), entity.getOwnerId(), entity.getOriginalName(),
                 entity.getOriginalObjectKey(), entity.getSizeBytes(), entity.getCreatedAt(),
-                VideoStatus.valueOf(entity.getStatus()));
+                VideoStatus.valueOf(entity.getStatus()), entity.getCompletedAt(), entity.getExpiresAt(),
+                entity.getFailedAt(), entity.getFailureCode());
     }
 
     public VideoEntity toUploadEntity(UploadIntent intent) {

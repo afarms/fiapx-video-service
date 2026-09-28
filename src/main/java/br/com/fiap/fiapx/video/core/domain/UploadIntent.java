@@ -18,8 +18,8 @@ public record UploadIntent(Video video, UUID idempotencyKey, String sha256, UUID
         if (leaseUntil.isBefore(video.createdAt())) {
             throw new IllegalArgumentException("leaseUntil precedes creation");
         }
-        if ((video.state() == VideoStatus.QUEUED) != (acceptedAt != null)) {
-            throw new IllegalArgumentException("Only a queued intention has an acceptance time");
+        if ((video.state() != VideoStatus.UPLOADING) != (acceptedAt != null)) {
+            throw new IllegalArgumentException("Accepted intentions require their original acceptance time");
         }
         if (acceptedAt != null && acceptedAt.isBefore(video.createdAt())) {
             throw new IllegalArgumentException("acceptedAt precedes creation");

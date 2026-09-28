@@ -68,8 +68,8 @@ class VideoMapperTest {
 
     @ParameterizedTest
     @NullAndEmptySource
-    @ValueSource(strings = {"COMPLETED", "FAILED", "UNKNOWN"})
-    void rejectsStatusThatInitialDomainCannotRepresent(String status) {
+    @ValueSource(strings = {"UNKNOWN"})
+    void rejectsUnknownPersistedStatus(String status) {
         var entity = entity(status, 1);
         assertThrows(IllegalArgumentException.class, () -> mapper.toDomain(entity));
     }

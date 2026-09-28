@@ -8,7 +8,8 @@ import java.util.UUID;
 
 /** Metadata only. A QUEUED value must be committed together with its outbox event. */
 public record Video(UUID id, UUID ownerId, String originalName, String originalObjectKey,
-                    long sizeBytes, Instant createdAt, VideoStatus state) {
+                    long sizeBytes, Instant createdAt, VideoStatus state,
+                    Instant completedAt, Instant expiresAt, Instant failedAt, String failureCode) {
     public static final long MAX_SIZE_BYTES = 100_000_000L;
     private static final Set<String> FORMATS = Set.of("mp4", "avi", "mov", "mkv", "wmv", "flv", "webm");
 
@@ -29,6 +30,11 @@ public record Video(UUID id, UUID ownerId, String originalName, String originalO
         if (sizeBytes <= 0 || sizeBytes > MAX_SIZE_BYTES) {
             throw new IllegalArgumentException("sizeBytes must be between 1 and 100000000");
         }
+    }
+
+    public Video(UUID id, UUID ownerId, String originalName, String originalObjectKey,
+                 long sizeBytes, Instant createdAt, VideoStatus state) {
+        this(id, ownerId, originalName, originalObjectKey, sizeBytes, createdAt, state, null, null, null, null);
     }
 
     public Video(UUID id, UUID ownerId, String originalName, String originalObjectKey,

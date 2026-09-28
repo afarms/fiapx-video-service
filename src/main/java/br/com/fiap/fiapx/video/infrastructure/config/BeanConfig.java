@@ -48,10 +48,39 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import tools.jackson.databind.json.JsonMapper;
 import java.nio.file.Path;
+import br.com.fiap.fiapx.video.core.gateway.ProcessingResultsGateway;
+import br.com.fiap.fiapx.video.infrastructure.persistence.adapter.ProcessingResultsAdapter;
+import br.com.fiap.fiapx.video.infrastructure.messaging.ProcessingResultDecoder;
+import br.com.fiap.fiapx.video.infrastructure.messaging.ProcessingResultsConsumer;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
 public class BeanConfig {
+    @Bean
+    public ProcessingResultsGateway processingResultsGateway(SpringVideoRepository repository,VideoMapper mapper,
+            PlatformTransactionManager manager,JsonMapper json) {
+        var tx=new TransactionTemplate(manager);
+        tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.setTimeout(10);
+        return new ProcessingResultsAdapter(repository,mapper,tx,json);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name="results.enabled",havingValue="true")
+    public ProcessingResultsConsumer processingResultsConsumer(SqsClient sqs,ProcessingResultsGateway gateway,JsonMapper json,
+            @Value("${results.queue-url}") String queue,@Value("${upload.bucket}") String bucket) {
+        return new ProcessingResultsConsumer(sqs,queue,new ProcessingResultDecoder(json,bucket),gateway);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name="results.enabled",havingValue="true")
+    public ThreadPoolTaskScheduler taskScheduler() {
+        var scheduler=new ThreadPoolTaskScheduler(); scheduler.setPoolSize(3); scheduler.setThreadNamePrefix("video-messaging-");
+        return scheduler;
+    }
+
     @Bean
     public Clock clock() { return Clock.systemUTC(); }
 
@@ -149,7 +178,7 @@ public class BeanConfig {
     }
 
     @Bean
-    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    @ConditionalOnExpression("${upload.enabled:false} or ${results.enabled:false}")
     public AwsCredentialsProvider uploadCredentials(@Value("${upload.aws-profile:}") String profile) {
         return profile.isBlank() ? DefaultCredentialsProvider.builder().build() : ProfileCredentialsProvider.create(profile);
     }
@@ -162,7 +191,7 @@ public class BeanConfig {
     }
 
     @Bean
-    @ConditionalOnProperty(name = "upload.enabled", havingValue = "true")
+    @ConditionalOnExpression("${upload.enabled:false} or ${results.enabled:false}")
     public SqsClient uploadSqs(AwsCredentialsProvider credentials, @Value("${upload.region:us-east-1}") String region) {
         return SqsClient.builder().region(Region.of(region)).credentialsProvider(credentials)
                 .overrideConfiguration(c -> c.apiCallTimeout(Duration.ofSeconds(20)).apiCallAttemptTimeout(Duration.ofSeconds(10))).build();

@@ -21,6 +21,10 @@ import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 import software.amazon.awssdk.core.sync.RequestBody;
 import tools.jackson.databind.json.JsonMapper;
+import br.com.fiap.fiapx.video.ProcessingFixtures;
+import br.com.fiap.fiapx.video.infrastructure.messaging.ProcessingResultDecoder;
+import br.com.fiap.fiapx.video.infrastructure.messaging.ProcessingResultsConsumer;
+import software.amazon.awssdk.services.sqs.model.*;
 import java.net.*;
 import java.net.http.*;
 import java.nio.file.*;
@@ -48,6 +52,7 @@ class UploadPostgresIT {
     final String upgradeSchema = schema + "_upgrade";
     boolean schemaCreated;
     boolean upgradeCreated;
+    boolean resultsOnly;
 
     java.sql.Connection database() throws java.sql.SQLException {
         return DriverManager.getConnection(System.getenv("UPLOAD_TEST_DB_URL"),
@@ -56,13 +61,18 @@ class UploadPostgresIT {
 
     @TestConfiguration(proxyBeanMethods = false)
     static class Boundaries {
+        static final Set<UUID> inactive=java.util.concurrent.ConcurrentHashMap.newKeySet();
         @Bean @Primary S3Client testS3() { return mock(S3Client.class); }
-        @Bean @Primary SqsClient testSqs() { return mock(SqsClient.class); }
+        @Bean @Primary SqsClient testSqs() {
+            var sqs=mock(SqsClient.class);
+            when(sqs.receiveMessage(any(ReceiveMessageRequest.class))).thenReturn(ReceiveMessageResponse.builder().build());
+            return sqs;
+        }
         @Bean @Primary JwtDecoder testJwt() {
             return token -> Jwt.withTokenValue(token).header("alg", "RS256").subject(token).claim("ver", 1L).build();
         }
         @Bean @Primary AccountAccessGateway testIdentity() {
-            return token -> new AccountAccess(UUID.fromString(token), "USER", true, 1L);
+            return token -> new AccountAccess(UUID.fromString(token), "USER", !inactive.contains(UUID.fromString(token)), 1L);
         }
     }
 
@@ -92,8 +102,9 @@ class UploadPostgresIT {
                 "--spring.liquibase.default-schema=" + schema,
                 "--spring.jpa.properties.hibernate.default_schema=" + schema,
                 "--identity.service-key=" + "x".repeat(32), "--identity.jwt.public-key=" + publicKey.toUri(),
-                "--upload.enabled=true", "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
-                "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false",
+                "--upload.enabled="+!resultsOnly, "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
+                "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false", "--results.enabled="+resultsOnly,
+                "--results.queue-url=https://sqs.us-east-1.amazonaws.com/123456789012/events",
                 "--upload.temp-directory=" + temporary.resolve("staging"), "--springdoc.api-docs.enabled=false");
         jdbc = context.getBean(JdbcTemplate.class);
         base = "http://127.0.0.1:" + context.getEnvironment().getProperty("local.server.port");
@@ -236,7 +247,7 @@ class UploadPostgresIT {
              var sql = connection.createStatement()) {
             sql.execute("CREATE SCHEMA " + upgradeSchema); upgradeCreated = true;
             sql.execute("SET search_path TO " + upgradeSchema);
-            for(var change : List.of("001-create-videos.sql", "002-upload-intentions-outbox.sql")) {
+            for(var change : List.of("001-create-videos.sql", "002-upload-intentions-outbox.sql", "003-processing-results.sql")) {
                 try(var source = getClass().getResourceAsStream("/db/changelog/changes/" + change)) {
                     sql.execute(new String(source.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
                 }
@@ -249,5 +260,117 @@ class UploadPostgresIT {
             assertThrows(java.sql.SQLException.class, () -> sql.execute("UPDATE videos SET status='QUEUED'"));
             assertThrows(java.sql.SQLException.class, () -> sql.execute("UPDATE videos SET idempotency_key='00000000-0000-0000-0000-000000000003'"));
         }
+    }
+
+    record Accepted(UUID owner,UUID key,UUID id,UUID correlation,String receipt) {}
+    Accepted accepted() throws Exception {
+        UUID account=UUID.randomUUID(),intention=UUID.randomUUID();
+        var response=post(account,intention,"sample.mp4","abc"); assertEquals(202,response.statusCode(),response.body());
+        UUID id=UUID.fromString(json.readTree(response.body()).path("id").asString());
+        UUID correlation=UUID.fromString(jdbc.queryForObject("SELECT payload->>'correlationId' FROM video_outbox WHERE video_id=?",String.class,id));
+        return new Accepted(account,intention,id,correlation,response.body());
+    }
+    Map<String,Object> result(Accepted video,String type,long version) {
+        return ProcessingFixtures.envelope(type,video.id(),video.owner(),video.correlation(),version);
+    }
+    ProcessingResultsGateway results() { return context.getBean(ProcessingResultsGateway.class); }
+    HttpResponse<String> get(UUID account,String suffix) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create(base+"/videos"+suffix)).header("Authorization","Bearer "+account).GET().build(),HttpResponse.BodyHandlers.ofString());
+    }
+    int inbox(Accepted a) { return jdbc.queryForObject("SELECT count(*) FROM video_processing_inbox WHERE video_id=?",Integer.class,a.id()); }
+
+    @Test @Order(6) void completedBeforeStartedSurvivesRestartAndPreservesHttpReceiptPrivacyAndExpiredTime() throws Exception {
+        var a=accepted(); var completed=result(a,"ProcessingCompleted",2);
+        Instant old=Instant.now().minusSeconds(172800).truncatedTo(java.time.temporal.ChronoUnit.MICROS); completed.put("occurredAt",old.toString());
+        ProcessingFixtures.payload(completed).put("completedAt",old.toString()); ProcessingFixtures.payload(completed).put("expiresAt",old.plusSeconds(86400).toString());
+        assertEquals(ProcessingResultsGateway.Outcome.APPLIED,results().apply(ProcessingFixtures.decode(completed)));
+        assertEquals(ProcessingResultsGateway.Outcome.IGNORED,results().apply(ProcessingFixtures.decode(result(a,"ProcessingStarted",1))));
+        assertEquals(ProcessingResultsGateway.Outcome.DUPLICATE,results().apply(ProcessingFixtures.decode(completed)));
+        assertEquals(2,inbox(a));
+        String checksum=jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='002-upload-intentions-outbox'",String.class);
+        context.close(); startApplication();
+        assertEquals(checksum,jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='002-upload-intentions-outbox'",String.class));
+        assertEquals(3,jdbc.queryForObject("SELECT count(*) FROM databasechangelog",Integer.class));
+        var response=get(a.owner(),"/"+a.id()); assertEquals(200,response.statusCode()); var body=json.readTree(response.body());
+        assertEquals("COMPLETED",body.path("status").asString());
+        // PostgreSQL timestamptz stores microseconds; timestamps retain the producer's expiration, not receive time.
+        assertEquals(old.plusSeconds(86400).truncatedTo(java.time.temporal.ChronoUnit.MICROS),Instant.parse(body.path("expiresAt").asString()));
+        for (String field:List.of("bucket","objectKey","sha256","result","resultBucket","originalObjectKey")) assertFalse(body.has(field));
+        var page=json.readTree(get(a.owner(),"").body()); assertEquals(body,page.path("items").get(0));
+        assertEquals(404,get(UUID.randomUUID(),"/"+a.id()).statusCode());
+        assertEquals(a.receipt(),post(a.owner(),a.key(),"sample.mp4","abc").body());
+    }
+
+    @Test @Order(7) void inactiveOwnerStillReceivesResultsButCannotQueryThemAndFailureIsSanitized() throws Exception {
+        var a=accepted(); Boundaries.inactive.add(a.owner());
+        try {
+            assertEquals(ProcessingResultsGateway.Outcome.APPLIED,results().apply(ProcessingFixtures.decode(result(a,"ProcessingStarted",1))));
+            assertEquals("PROCESSING",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,a.id()));
+            results().apply(ProcessingFixtures.decode(result(a,"ProcessingFailed",2)));
+            assertEquals(403,get(a.owner(),"/"+a.id()).statusCode()); assertEquals(403,get(a.owner(),"").statusCode());
+        } finally { Boundaries.inactive.remove(a.owner()); }
+        var body=json.readTree(get(a.owner(),"/"+a.id()).body()); assertEquals("FAILED",body.path("status").asString());
+        assertEquals("INVALID_MEDIA",body.path("failureCode").asString()); assertTrue(body.has("failedAt"));
+        assertFalse(body.has("expiresAt")); assertFalse(body.has("completedAt"));
+        assertEquals(a.receipt(),post(a.owner(),a.key(),"sample.mp4","abc").body());
+    }
+
+    @Test @Order(8) void inboxRollbackPreventsAckAndFailedAckThenReplayPreserveCommittedResult() throws Exception {
+        var a=accepted(); var failed=result(a,"ProcessingFailed",2); var sqs=mock(SqsClient.class);
+        when(sqs.receiveMessage(any(ReceiveMessageRequest.class))).thenReturn(ReceiveMessageResponse.builder()
+                .messages(Message.builder().messageId("delivery").receiptHandle("latest").body(json.writeValueAsString(failed)).build()).build());
+        jdbc.execute("ALTER TABLE video_processing_inbox ADD CONSTRAINT reject_result_test CHECK(video_id<>'"+a.id()+"'::uuid)");
+        try (var consumer=new ProcessingResultsConsumer(sqs,"https://sqs.us-east-1.amazonaws.com/123456789012/events",
+                new ProcessingResultDecoder(json,ProcessingFixtures.BUCKET),results())) {
+            consumer.poll(); assertEquals(0,inbox(a));
+            assertEquals("QUEUED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,a.id()));
+            verify(sqs,never()).deleteMessage(any(DeleteMessageRequest.class));
+            jdbc.execute("ALTER TABLE video_processing_inbox DROP CONSTRAINT reject_result_test");
+            when(sqs.deleteMessage(any(DeleteMessageRequest.class))).thenAnswer(call->{
+                assertEquals(1,inbox(a)); assertEquals("FAILED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,a.id()));
+                throw new IllegalStateException("uncertain ACK");
+            });
+            consumer.poll(); consumer.poll(); verify(sqs,times(2)).deleteMessage(any(DeleteMessageRequest.class));
+            assertEquals(1,inbox(a));
+        } finally { jdbc.execute("ALTER TABLE video_processing_inbox DROP CONSTRAINT IF EXISTS reject_result_test"); }
+    }
+
+    @Test @Order(9) void simultaneousDuplicateHasOneEffectAndConflictsNeverOverwriteTerminal() throws Exception {
+        var a=accepted(); var completed=result(a,"ProcessingCompleted",2); var event=ProcessingFixtures.decode(completed);
+        try (var pool=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var start=new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<ProcessingResultsGateway.Outcome> action=()->{start.await(); return results().apply(event);};
+            var first=pool.submit(action); var second=pool.submit(action); start.countDown();
+            assertEquals(Set.of(ProcessingResultsGateway.Outcome.APPLIED,ProcessingResultsGateway.Outcome.DUPLICATE),
+                    Set.of(first.get(10,java.util.concurrent.TimeUnit.SECONDS),second.get(10,java.util.concurrent.TimeUnit.SECONDS)));
+        }
+        var different=result(a,"ProcessingFailed",3); assertThrows(IllegalArgumentException.class,()->results().apply(ProcessingFixtures.decode(different)));
+        ProcessingFixtures.payload(completed).put("sizeBytes",101);
+        assertThrows(IllegalArgumentException.class,()->results().apply(ProcessingFixtures.decode(completed)));
+        var wrongOwner=result(a,"ProcessingStarted",1); wrongOwner.put("ownerId",UUID.randomUUID().toString());
+        assertThrows(IllegalArgumentException.class,()->results().apply(ProcessingFixtures.decode(wrongOwner)));
+        var correlation=result(a,"ProcessingStarted",1); correlation.put("correlationId",UUID.randomUUID().toString());
+        assertThrows(IllegalArgumentException.class,()->results().apply(ProcessingFixtures.decode(correlation)));
+        assertEquals(1,inbox(a)); assertEquals("COMPLETED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,a.id()));
+        assertEquals(100,jdbc.queryForObject("SELECT result_size_bytes FROM videos WHERE id=?",Long.class,a.id()));
+    }
+
+    @Test @Order(10) void oldVersionAndCrossVideoEventCollisionAreRecordedOrRolledBackAtomically() throws Exception {
+        var a=accepted(); var newest=result(a,"ProcessingStarted",3); results().apply(ProcessingFixtures.decode(newest));
+        assertEquals(ProcessingResultsGateway.Outcome.IGNORED,results().apply(ProcessingFixtures.decode(result(a,"ProcessingStarted",1))));
+        assertEquals(3,jdbc.queryForObject("SELECT processing_version FROM videos WHERE id=?",Long.class,a.id()));
+        assertThrows(IllegalArgumentException.class,()->results().apply(ProcessingFixtures.decode(result(a,"ProcessingStarted",3))));
+        var b=accepted(); var other=result(b,"ProcessingFailed",2); other.put("eventId",newest.get("eventId"));
+        assertThrows(IllegalArgumentException.class,()->results().apply(ProcessingFixtures.decode(other)));
+        assertEquals("QUEUED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,b.id())); assertEquals(0,inbox(b));
+    }
+
+    @Test @Order(11) void resultConsumerCanStartWithUploadsDisabledAndOnlyMockedTransport() {
+        context.close(); resultsOnly=true; startApplication();
+        assertNotNull(context.getBean(ProcessingResultsConsumer.class));
+        assertTrue(context.getBeansOfType(UploadGateway.class).isEmpty());
+        assertNotNull(context.getBean(SqsClient.class));
+        assertEquals(3,context.getBean(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class)
+                .getScheduledThreadPoolExecutor().getCorePoolSize());
     }
 }

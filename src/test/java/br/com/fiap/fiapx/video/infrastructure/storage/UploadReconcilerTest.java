@@ -14,6 +14,14 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class UploadReconcilerTest {
+    @Test void preservesAcceptedOriginalAcrossEveryProcessingStatus() throws Exception {
+        when(client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(ListObjectsV2Response.builder().contents(object("originals/accepted",false)).build());
+        for(String state:List.of("PROCESSING","COMPLETED","FAILED")) {
+            when(repository.lockByOriginalKey("originals/accepted")).thenReturn(Optional.of(video(state,UUID.randomUUID(),now.minusSeconds(1000))));
+            reconciler.reconcile();
+        }
+        verify(client,never()).deleteObject(any(DeleteObjectRequest.class));
+    }
     final SpringVideoRepository repository = mock(SpringVideoRepository.class);
     final PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
     final S3Client client = mock(S3Client.class);

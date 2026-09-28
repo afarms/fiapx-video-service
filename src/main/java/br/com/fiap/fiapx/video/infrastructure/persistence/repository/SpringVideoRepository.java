@@ -12,6 +12,32 @@ import org.springframework.data.repository.query.Param;
 import java.time.Instant;
 
 public interface SpringVideoRepository extends JpaRepository<VideoEntity, UUID> {
+    @Query(value="SELECT * FROM videos WHERE id=:id FOR UPDATE",nativeQuery=true)
+    Optional<VideoEntity> lockProcessing(UUID id);
+
+    @Query(value="SELECT payload->>'correlationId' FROM video_outbox WHERE video_id=:id AND event_type='VideoProcessingRequested'",nativeQuery=true)
+    String processingCorrelation(UUID id);
+
+    @Query(value="SELECT canonical_event FROM video_processing_inbox WHERE event_id=:event",nativeQuery=true)
+    String processingInbox(UUID event);
+
+    @Modifying
+    @Query(value="""
+        INSERT INTO video_processing_inbox(event_id,video_id,event_version,canonical_event,outcome)
+        VALUES (:event,:video,:version,:canonical,:outcome) ON CONFLICT (event_id) DO NOTHING
+        """,nativeQuery=true)
+    int insertProcessingInbox(UUID event,UUID video,long version,String canonical,String outcome);
+
+    @Modifying(clearAutomatically=true,flushAutomatically=true)
+    @Query(value="""
+        UPDATE videos SET status=:status,processing_version=:version,processing_attempt_id=:attemptId,processing_attempt=:attempt,
+            completed_at=:completed,expires_at=:expires,failed_at=:failed,failure_code=:failure,
+            result_bucket=:bucket,result_object_key=:key,result_size_bytes=:size,result_sha256=:hash,result_frame_count=:frames
+        WHERE id=:id
+        """,nativeQuery=true)
+    int applyProcessing(UUID id,String status,long version,UUID attemptId,int attempt,Instant completed,Instant expires,
+            Instant failed,String failure,String bucket,String key,Long size,String hash,Integer frames);
+
     Optional<VideoEntity> findByIdAndOwnerId(UUID id, UUID ownerId);
 
     Page<VideoEntity> findByOwnerId(UUID ownerId, Pageable pageable);
