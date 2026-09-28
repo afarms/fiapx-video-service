@@ -36,6 +36,8 @@ upload:
   disk-reserve-bytes: ${UPLOAD_DISK_RESERVE_BYTES:500000000}
   lease-seconds: ${UPLOAD_LEASE_SECONDS:300}
   publisher-delay-ms: ${UPLOAD_PUBLISHER_DELAY_MS:5000}
+  processing-reconcile-enabled: ${PROCESSING_RECONCILE_ENABLED:false}
+  processing-reconcile-delay-ms: ${PROCESSING_RECONCILE_DELAY_MS:60000}
   cleanup-delay-ms: ${UPLOAD_CLEANUP_DELAY_MS:60000}
 results:
   enabled: ${PROCESSING_RESULTS_ENABLED:false}

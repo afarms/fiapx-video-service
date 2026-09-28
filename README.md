@@ -55,7 +55,7 @@ O alvo run carrega o `.env` com Bash e inicia spring-boot:run; não depende de p
 
 Saúde: `/actuator/health`, `/actuator/health/liveness` e `/actuator/health/readiness`. Readiness inclui o banco; essas rotas são fornecidas pelo Actuator, sem controllers próprios.
 
-O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica 001, 002 e 003 na inicialização. A migration 002 acrescenta UPLOADING/QUEUED, intenção permanente, tentativas e outbox, preservando registros legados. Registrar metadados não confirma aceite: é necessário original persistido e commit de QUEUED/outbox. A migration 003 acrescenta estados de processamento, versão, inbox e metadados de resultado, preservando o recibo original de aceite.
+O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica 001 a 004 na inicialização. A migration 002 acrescenta UPLOADING/QUEUED, intenção permanente, tentativas e outbox, preservando registros legados. Registrar metadados não confirma aceite: é necessário original persistido e commit de QUEUED/outbox. A migration 003 acrescenta estados de processamento, versão, inbox e metadados de resultado, preservando o recibo original de aceite. A migration 004 registra a contagem e a data dos reagendamentos de trabalho sem resultado.
 
 ```bash
 docker compose logs --tail=100 video
@@ -123,6 +123,7 @@ Identidade, extração de imagens e notificações pertencem a serviços indepen
 
 ## Documentação
 
+- [Reconciliação de trabalho e resultados](docs/reconciliation.md).
 - [Domínio e regras](docs/domain/videos.md).
 - [Limite arquitetural](docs/architecture/boundary.md).
 - [Clean Architecture e persistência](docs/architecture/clean-architecture.md).
