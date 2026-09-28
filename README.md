@@ -4,6 +4,8 @@ Domínio responsável pela submissão de vídeos, metadados, estado público do 
 
 ## Build e testes unitários
 
+A [base de reservas de download e retenção](docs/download-retention.md) coordena transferências e limpeza no PostgreSQL. O endpoint de download e a exclusão assíncrona no S3 ainda não estão ativados.
+
 Pré-requisitos: JDK 21 e acesso ao Maven Central no primeiro build. No Git Bash, a partir da raiz:
 
 ```bash

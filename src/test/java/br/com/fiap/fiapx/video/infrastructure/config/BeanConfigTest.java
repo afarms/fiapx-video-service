@@ -16,6 +16,11 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 
 class BeanConfigTest {
+    @Test void downloadReservationsUseTheirOwnTransactionBoundary() {
+        var config=new BeanConfig();
+        assertNotNull(config.downloadGateway(mock(br.com.fiap.fiapx.video.infrastructure.persistence.repository.SpringDownloadRepository.class),
+                config.downloadMapper(),mock(org.springframework.transaction.PlatformTransactionManager.class)));
+    }
     @Test void composesResultGatewayAndConsumerWithDedicatedScheduling() {
         var config=new BeanConfig();
         var gateway=config.processingResultsGateway(mock(SpringVideoRepository.class),config.videoMapper(),

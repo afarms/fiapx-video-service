@@ -54,6 +54,16 @@ class UploadPostgresIT {
     boolean upgradeCreated;
     boolean resultsOnly;
 
+    /** Test-only barrier after predicate evaluation, before the production SELECT acquires its row lock. */
+    public static class CleanupSnapshotInspector implements org.hibernate.resource.jdbc.spi.StatementInspector {
+        static volatile boolean enabled;
+        public String inspect(String sql) {
+            String predicate="NOT EXISTS (SELECT 1 FROM video_download_leases d WHERE d.video_id=videos.id AND d.valid_until>clock_timestamp())";
+            return enabled && sql.contains("FOR UPDATE SKIP LOCKED")
+                    ? sql.replace(predicate,"test_cleanup_snapshot_gate("+predicate+")") : sql;
+        }
+    }
+
     java.sql.Connection database() throws java.sql.SQLException {
         return DriverManager.getConnection(System.getenv("UPLOAD_TEST_DB_URL"),
                 System.getenv("UPLOAD_TEST_DB_USERNAME"), System.getenv("UPLOAD_TEST_DB_PASSWORD"));
@@ -101,6 +111,7 @@ class UploadPostgresIT {
                 "--spring.datasource.hikari.schema=" + schema,
                 "--spring.liquibase.default-schema=" + schema,
                 "--spring.jpa.properties.hibernate.default_schema=" + schema,
+                "--spring.jpa.properties.hibernate.session_factory.statement_inspector=" + CleanupSnapshotInspector.class.getName(),
                 "--identity.service-key=" + "x".repeat(32), "--identity.jwt.public-key=" + publicKey.toUri(),
                 "--upload.enabled="+!resultsOnly, "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
                 "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false", "--results.enabled="+resultsOnly,
@@ -247,7 +258,7 @@ class UploadPostgresIT {
              var sql = connection.createStatement()) {
             sql.execute("CREATE SCHEMA " + upgradeSchema); upgradeCreated = true;
             sql.execute("SET search_path TO " + upgradeSchema);
-            for(var change : List.of("001-create-videos.sql", "002-upload-intentions-outbox.sql", "003-processing-results.sql", "004-processing-reconciliation.sql")) {
+            for(var change : List.of("001-create-videos.sql", "002-upload-intentions-outbox.sql", "003-processing-results.sql", "004-processing-reconciliation.sql", "005-download-retention.sql")) {
                 try(var source = getClass().getResourceAsStream("/db/changelog/changes/" + change)) {
                     sql.execute(new String(source.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
                 }
@@ -290,7 +301,7 @@ class UploadPostgresIT {
         String checksum=jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='002-upload-intentions-outbox'",String.class);
         context.close(); startApplication();
         assertEquals(checksum,jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='002-upload-intentions-outbox'",String.class));
-        assertEquals(4,jdbc.queryForObject("SELECT count(*) FROM databasechangelog",Integer.class));
+        assertEquals(5,jdbc.queryForObject("SELECT count(*) FROM databasechangelog",Integer.class));
         var response=get(a.owner(),"/"+a.id()); assertEquals(200,response.statusCode()); var body=json.readTree(response.body());
         assertEquals("COMPLETED",body.path("status").asString());
         // PostgreSQL timestamptz stores microseconds; timestamps retain the producer's expiration, not receive time.
@@ -421,5 +432,168 @@ class UploadPostgresIT {
         assertNotNull(context.getBean(SqsClient.class));
         assertEquals(3,context.getBean(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class)
                 .getScheduledThreadPoolExecutor().getCorePoolSize());
+    }
+
+    Accepted downloadVideo() throws Exception {
+        if(resultsOnly) { context.close(); resultsOnly=false; startApplication(); }
+        var video=accepted(); var event=result(video,"ProcessingCompleted",2);
+        Instant completed=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        event.put("occurredAt",completed.toString());
+        ProcessingFixtures.payload(event).put("completedAt",completed.toString());
+        ProcessingFixtures.payload(event).put("expiresAt",completed.plusSeconds(86400).toString());
+        results().apply(ProcessingFixtures.decode(event)); return video;
+    }
+    DownloadGateway downloads() { return context.getBean(DownloadGateway.class); }
+    void expireDownload(Accepted video) {
+        jdbc.update("UPDATE videos SET completed_at=statement_timestamp()-interval '25 hours',expires_at=statement_timestamp()-interval '1 hour' WHERE id=?",video.id());
+    }
+    Optional<DownloadGateway.Cleanup> cleanupFor(Accepted video) {
+        return downloads().claimExpired(100,Duration.ofSeconds(120)).stream().filter(c->c.artifact().videoId().equals(video.id())).findFirst();
+    }
+
+    @Test @Order(14) void downloadLeasesProtectExpiredResultUntilBothTransfersRelease() throws Exception {
+        var video=downloadVideo(); var gateway=downloads();
+        assertThrows(VideoNotFoundException.class,()->gateway.reserve(video.id(),UUID.randomUUID(),Duration.ofSeconds(120),Duration.ofSeconds(1800)));
+        var first=gateway.reserve(video.id(),video.owner(),Duration.ofSeconds(120),Duration.ofSeconds(1800));
+        var second=gateway.reserve(video.id(),video.owner(),Duration.ofSeconds(120),Duration.ofSeconds(1800));
+        assertNotEquals(first.token(),second.token()); assertEquals(video.owner(),first.artifact().ownerId());
+        assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM video_download_leases WHERE video_id=?",Integer.class,video.id()));
+        expireDownload(video);
+        assertEquals(DownloadException.Reason.EXPIRED,assertThrows(DownloadException.class,()->gateway.reserve(video.id(),video.owner(),Duration.ofSeconds(120),Duration.ofSeconds(1800))).reason());
+        assertTrue(cleanupFor(video).isEmpty()); assertTrue(gateway.renew(video.id(),first.token(),Duration.ofSeconds(120)).isPresent());
+        gateway.release(video.id(),first.token()); gateway.release(video.id(),first.token());
+        assertTrue(cleanupFor(video).isEmpty()); gateway.release(video.id(),second.token());
+        var clean=cleanupFor(video).orElseThrow();
+        assertTrue(gateway.renew(video.id(),second.token(),Duration.ofSeconds(120)).isEmpty());
+        assertFalse(gateway.deleted(video.id(),UUID.randomUUID())); assertTrue(gateway.deleted(video.id(),clean.token()));
+        assertFalse(gateway.deleted(video.id(),clean.token())); assertTrue(cleanupFor(video).isEmpty());
+        assertEquals("COMPLETED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,video.id()));
+        assertNotNull(jdbc.queryForObject("SELECT result_object_key FROM videos WHERE id=?",String.class,video.id()));
+        assertEquals(video.receipt(),post(video.owner(),video.key(),"sample.mp4","abc").body());
+        assertEquals(1,inbox(video));
+    }
+
+    @Test @Order(15) void cleanupRetryAndCrashSurviveRestartAndFencePreviousOwner() throws Exception {
+        var video=downloadVideo(); expireDownload(video); var initial=cleanupFor(video).orElseThrow();
+        context.close(); startApplication();
+        assertTrue(cleanupFor(video).isEmpty());
+        jdbc.update("UPDATE videos SET result_cleanup_until=clock_timestamp()-interval '1 second' WHERE id=?",video.id());
+        var next=cleanupFor(video).orElseThrow(); assertNotEquals(initial.token(),next.token());
+        assertFalse(downloads().deleted(video.id(),initial.token()));
+        assertFalse(downloads().retryCleanup(video.id(),initial.token(),Duration.ofSeconds(30)));
+        assertTrue(downloads().retryCleanup(video.id(),next.token(),Duration.ofSeconds(30)));
+        assertTrue(cleanupFor(video).isEmpty());
+        jdbc.update("UPDATE videos SET result_cleanup_available_at=clock_timestamp()-interval '1 second' WHERE id=?",video.id());
+        var retried=cleanupFor(video).orElseThrow(); assertTrue(downloads().deleted(video.id(),retried.token()));
+        assertNotNull(jdbc.queryForObject("SELECT result_deleted_at FROM videos WHERE id=?",java.sql.Timestamp.class,video.id()));
+    }
+
+    @Test @Order(16) void concurrentCleanersClaimOneResultOnce() throws Exception {
+        var video=downloadVideo(); expireDownload(video);
+        var start=new java.util.concurrent.CountDownLatch(1);
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<Optional<DownloadGateway.Cleanup>> action=()-> { start.await(); return cleanupFor(video); };
+            var a=executor.submit(action); var b=executor.submit(action); start.countDown();
+            var x=a.get(10,java.util.concurrent.TimeUnit.SECONDS); var y=b.get(10,java.util.concurrent.TimeUnit.SECONDS);
+            assertNotEquals(x.isPresent(),y.isPresent());
+            assertTrue(downloads().deleted(video.id(),x.orElseGet(y::orElseThrow).token()));
+        }
+    }
+
+    @Test @Order(17) void admissionRechecksExpirationAfterWaitingForVideoLock() throws Exception {
+        var video=downloadVideo(); var tx=new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+        var locked=new java.util.concurrent.CountDownLatch(1); var release=new java.util.concurrent.CountDownLatch(1);
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var hold=executor.submit(()->tx.executeWithoutResult(status->{
+                jdbc.queryForObject("SELECT id FROM videos WHERE id=? FOR UPDATE",UUID.class,video.id()); locked.countDown();
+                try { if(!release.await(5,java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("timeout"); }
+                catch(InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException(failure); }
+                expireDownload(video);
+            }));
+            try {
+                assertTrue(locked.await(5,java.util.concurrent.TimeUnit.SECONDS));
+                var attempt=executor.submit(()->assertThrows(DownloadException.class,()->downloads().reserve(video.id(),video.owner(),Duration.ofSeconds(120),Duration.ofSeconds(1800))).reason());
+                assertThrows(java.util.concurrent.TimeoutException.class,()->attempt.get(150,java.util.concurrent.TimeUnit.MILLISECONDS));
+                release.countDown(); hold.get(5,java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(DownloadException.Reason.EXPIRED,attempt.get(5,java.util.concurrent.TimeUnit.SECONDS));
+            } finally { release.countDown(); }
+        }
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM video_download_leases WHERE video_id=?",Integer.class,video.id()));
+    }
+
+    @Test @Order(18) void expiredDownloadCannotResurrectAndRenewalCannotExtendDeadline() throws Exception {
+        var video=downloadVideo(); var lease=downloads().reserve(video.id(),video.owner(),Duration.ofSeconds(30),Duration.ofSeconds(60));
+        assertEquals(lease.deadline(),downloads().renew(video.id(),lease.token(),Duration.ofSeconds(120)).orElseThrow());
+        jdbc.update("UPDATE video_download_leases SET created_at=clock_timestamp()-interval '2 minutes',valid_until=clock_timestamp()-interval '1 second' WHERE token=?",lease.token());
+        assertTrue(downloads().renew(video.id(),lease.token(),Duration.ofSeconds(120)).isEmpty());
+        expireDownload(video); var claim=cleanupFor(video).orElseThrow();
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM video_download_leases WHERE video_id=?",Integer.class,video.id()));
+        assertTrue(downloads().deleted(video.id(),claim.token()));
+    }
+
+    @Test @Order(19) void reservationRollbackDoesNotLeakAndIndependentCommitSurvivesOuterRollback() throws Exception {
+        var video=downloadVideo();
+        jdbc.execute("ALTER TABLE video_download_leases ADD CONSTRAINT reject_test_download CHECK(video_id <> '"+video.id()+"'::uuid)");
+        try {
+            assertEquals(DownloadException.Reason.UNAVAILABLE,assertThrows(DownloadException.class,()->downloads().reserve(video.id(),video.owner(),Duration.ofSeconds(120),Duration.ofSeconds(1800))).reason());
+            assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM video_download_leases WHERE video_id=?",Integer.class,video.id()));
+        } finally { jdbc.execute("ALTER TABLE video_download_leases DROP CONSTRAINT reject_test_download"); }
+        var outer=new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+        var lease=outer.execute(status->{
+            var acquired=downloads().reserve(video.id(),video.owner(),Duration.ofSeconds(120),Duration.ofSeconds(1800));
+            status.setRollbackOnly(); return acquired;
+        });
+        context.close(); startApplication();
+        assertTrue(downloads().renew(video.id(),lease.token(),Duration.ofSeconds(120)).isPresent());
+        downloads().release(video.id(),lease.token());
+    }
+
+    @Test @Order(20) void cleanupRechecksLeaseCommittedAfterItsSelectionSnapshot() throws Exception {
+        var video=downloadVideo(); UUID token=UUID.randomUUID();
+        long barrierKey=UUID.randomUUID().getLeastSignificantBits();
+        jdbc.execute("CREATE FUNCTION test_cleanup_snapshot_gate(eligible boolean) RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN IF eligible THEN PERFORM pg_advisory_xact_lock("+barrierKey+"); END IF; RETURN eligible; END $$");
+        // Select only this video so the barrier cannot be reached for a historical fixture.
+        jdbc.update("UPDATE videos SET result_cleanup_available_at=clock_timestamp()+interval '1 day' WHERE id<>?",video.id());
+        jdbc.update("UPDATE videos SET completed_at=statement_timestamp()-interval '24 hours'+interval '2 seconds', expires_at=statement_timestamp()+interval '2 seconds' WHERE id=?",video.id());
+        var inserted=new java.util.concurrent.CountDownLatch(1); var commit=new java.util.concurrent.CountDownLatch(1);
+        var tx=new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+        var repository=context.getBean(SpringDownloadRepository.class);
+        try(var gateConnection=database(); var gate=gateConnection.createStatement();
+            var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            gate.execute("SELECT pg_advisory_lock("+barrierKey+")");
+            try {
+                var reservation=executor.submit(()->tx.executeWithoutResult(status->{
+                    var row=repository.lock(video.id()).orElseThrow(); Instant now=repository.now();
+                    assertTrue(now.isBefore(row.getExpiresAt()));
+                    assertEquals(1,repository.insertLease(token,video.id(),now,now.plusSeconds(120),now.plusSeconds(1800)));
+                    inserted.countDown();
+                    try { if(!commit.await(8,java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("Reservation barrier timed out"); }
+                    catch(InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException(failure); }
+                }));
+                assertTrue(inserted.await(5,java.util.concurrent.TimeUnit.SECONDS));
+                jdbc.queryForList("SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM expires_at-clock_timestamp()))) FROM videos WHERE id=?",video.id());
+                CleanupSnapshotInspector.enabled=true;
+                var cleanup=executor.submit(()->cleanupFor(video));
+                long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                boolean waiting=false;
+                while(System.nanoTime()<deadline) {
+                    waiting=jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE '%test_cleanup_snapshot_gate%')",Boolean.class);
+                    if(waiting) break;
+                    Thread.sleep(20);
+                }
+                assertTrue(waiting,"Cleanup must pause after evaluating its old snapshot");
+                commit.countDown(); reservation.get(5,java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM video_download_leases WHERE token=? AND valid_until>clock_timestamp()",Integer.class,token));
+                gate.execute("SELECT pg_advisory_unlock("+barrierKey+")");
+                assertTrue(cleanup.get(5,java.util.concurrent.TimeUnit.SECONDS).isEmpty(),"A newly committed active transfer must not be claimed for deletion");
+                assertNull(jdbc.queryForObject("SELECT result_cleanup_token FROM videos WHERE id=?",UUID.class,video.id()));
+                CleanupSnapshotInspector.enabled=false;
+                downloads().release(video.id(),token);
+                assertTrue(cleanupFor(video).isPresent(),"Cleanup becomes eligible after the transfer releases");
+            } finally {
+                commit.countDown(); CleanupSnapshotInspector.enabled=false;
+                gate.execute("SELECT pg_advisory_unlock("+barrierKey+")");
+            }
+        }
     }
 }
