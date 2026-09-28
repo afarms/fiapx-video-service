@@ -55,7 +55,7 @@ public final class DownloadGatewayAdapter implements DownloadGateway {
             for (var row : repository.lockExpired(limit)) {
                 var artifact = mapper.artifact(row);
                 UUID token = UUID.randomUUID(); Instant until = repository.now().plus(lease);
-                changed(repository.claim(row.getId(), token, until));
+                if (repository.claim(row.getId(), token, until) != 1) continue;
                 repository.prune(row.getId());
                 claims.add(new Cleanup(token, artifact, until));
             }

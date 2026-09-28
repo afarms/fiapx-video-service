@@ -57,7 +57,15 @@ public interface SpringDownloadRepository extends Repository<VideoEntity, UUID> 
     List<ResultRow> lockExpired(int limit);
 
     @Modifying
-    @Query(value = "UPDATE videos SET result_cleanup_token=:token,result_cleanup_until=:until WHERE id=:video", nativeQuery = true)
+    // Separate READ COMMITTED statement after lockExpired holds the parent lock:
+    // leases committed after the candidate SELECT's snapshot must still protect their transfer.
+    @Query(value = """
+        UPDATE videos SET result_cleanup_token=:token,result_cleanup_until=:until
+        WHERE id=:video AND status='COMPLETED' AND expires_at<=clock_timestamp() AND result_deleted_at IS NULL
+            AND result_cleanup_available_at<=clock_timestamp()
+            AND (result_cleanup_until IS NULL OR result_cleanup_until<=clock_timestamp())
+            AND NOT EXISTS (SELECT 1 FROM video_download_leases d WHERE d.video_id=videos.id AND d.valid_until>clock_timestamp())
+        """, nativeQuery = true)
     int claim(UUID video, UUID token, Instant until);
 
     @Modifying

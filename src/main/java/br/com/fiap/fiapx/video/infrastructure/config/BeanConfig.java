@@ -70,6 +70,7 @@ public class BeanConfig {
             PlatformTransactionManager manager) {
         var tx = new TransactionTemplate(manager);
         tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED);
         tx.setTimeout(10);
         return new br.com.fiap.fiapx.video.infrastructure.persistence.adapter.DownloadGatewayAdapter(repository, mapper, tx);
     }

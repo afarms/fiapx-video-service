@@ -54,6 +54,16 @@ class UploadPostgresIT {
     boolean upgradeCreated;
     boolean resultsOnly;
 
+    /** Test-only barrier after predicate evaluation, before the production SELECT acquires its row lock. */
+    public static class CleanupSnapshotInspector implements org.hibernate.resource.jdbc.spi.StatementInspector {
+        static volatile boolean enabled;
+        public String inspect(String sql) {
+            String predicate="NOT EXISTS (SELECT 1 FROM video_download_leases d WHERE d.video_id=videos.id AND d.valid_until>clock_timestamp())";
+            return enabled && sql.contains("FOR UPDATE SKIP LOCKED")
+                    ? sql.replace(predicate,"test_cleanup_snapshot_gate("+predicate+")") : sql;
+        }
+    }
+
     java.sql.Connection database() throws java.sql.SQLException {
         return DriverManager.getConnection(System.getenv("UPLOAD_TEST_DB_URL"),
                 System.getenv("UPLOAD_TEST_DB_USERNAME"), System.getenv("UPLOAD_TEST_DB_PASSWORD"));
@@ -101,6 +111,7 @@ class UploadPostgresIT {
                 "--spring.datasource.hikari.schema=" + schema,
                 "--spring.liquibase.default-schema=" + schema,
                 "--spring.jpa.properties.hibernate.default_schema=" + schema,
+                "--spring.jpa.properties.hibernate.session_factory.statement_inspector=" + CleanupSnapshotInspector.class.getName(),
                 "--identity.service-key=" + "x".repeat(32), "--identity.jwt.public-key=" + publicKey.toUri(),
                 "--upload.enabled="+!resultsOnly, "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
                 "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false", "--results.enabled="+resultsOnly,
@@ -535,5 +546,54 @@ class UploadPostgresIT {
         context.close(); startApplication();
         assertTrue(downloads().renew(video.id(),lease.token(),Duration.ofSeconds(120)).isPresent());
         downloads().release(video.id(),lease.token());
+    }
+
+    @Test @Order(20) void cleanupRechecksLeaseCommittedAfterItsSelectionSnapshot() throws Exception {
+        var video=downloadVideo(); UUID token=UUID.randomUUID();
+        long barrierKey=UUID.randomUUID().getLeastSignificantBits();
+        jdbc.execute("CREATE FUNCTION test_cleanup_snapshot_gate(eligible boolean) RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN IF eligible THEN PERFORM pg_advisory_xact_lock("+barrierKey+"); END IF; RETURN eligible; END $$");
+        // Select only this video so the barrier cannot be reached for a historical fixture.
+        jdbc.update("UPDATE videos SET result_cleanup_available_at=clock_timestamp()+interval '1 day' WHERE id<>?",video.id());
+        jdbc.update("UPDATE videos SET completed_at=statement_timestamp()-interval '24 hours'+interval '2 seconds', expires_at=statement_timestamp()+interval '2 seconds' WHERE id=?",video.id());
+        var inserted=new java.util.concurrent.CountDownLatch(1); var commit=new java.util.concurrent.CountDownLatch(1);
+        var tx=new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+        var repository=context.getBean(SpringDownloadRepository.class);
+        try(var gateConnection=database(); var gate=gateConnection.createStatement();
+            var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            gate.execute("SELECT pg_advisory_lock("+barrierKey+")");
+            try {
+                var reservation=executor.submit(()->tx.executeWithoutResult(status->{
+                    var row=repository.lock(video.id()).orElseThrow(); Instant now=repository.now();
+                    assertTrue(now.isBefore(row.getExpiresAt()));
+                    assertEquals(1,repository.insertLease(token,video.id(),now,now.plusSeconds(120),now.plusSeconds(1800)));
+                    inserted.countDown();
+                    try { if(!commit.await(8,java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("Reservation barrier timed out"); }
+                    catch(InterruptedException failure) { Thread.currentThread().interrupt(); throw new IllegalStateException(failure); }
+                }));
+                assertTrue(inserted.await(5,java.util.concurrent.TimeUnit.SECONDS));
+                jdbc.queryForList("SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM expires_at-clock_timestamp()))) FROM videos WHERE id=?",video.id());
+                CleanupSnapshotInspector.enabled=true;
+                var cleanup=executor.submit(()->cleanupFor(video));
+                long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                boolean waiting=false;
+                while(System.nanoTime()<deadline) {
+                    waiting=jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE '%test_cleanup_snapshot_gate%')",Boolean.class);
+                    if(waiting) break;
+                    Thread.sleep(20);
+                }
+                assertTrue(waiting,"Cleanup must pause after evaluating its old snapshot");
+                commit.countDown(); reservation.get(5,java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM video_download_leases WHERE token=? AND valid_until>clock_timestamp()",Integer.class,token));
+                gate.execute("SELECT pg_advisory_unlock("+barrierKey+")");
+                assertTrue(cleanup.get(5,java.util.concurrent.TimeUnit.SECONDS).isEmpty(),"A newly committed active transfer must not be claimed for deletion");
+                assertNull(jdbc.queryForObject("SELECT result_cleanup_token FROM videos WHERE id=?",UUID.class,video.id()));
+                CleanupSnapshotInspector.enabled=false;
+                downloads().release(video.id(),token);
+                assertTrue(cleanupFor(video).isPresent(),"Cleanup becomes eligible after the transfer releases");
+            } finally {
+                commit.countDown(); CleanupSnapshotInspector.enabled=false;
+                gate.execute("SELECT pg_advisory_unlock("+barrierKey+")");
+            }
+        }
     }
 }

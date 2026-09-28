@@ -75,7 +75,10 @@ class DownloadGatewayAdapterTest {
         when(repository.lockExpired(2)).thenReturn(List.of(row)); when(repository.claim(eq(id),any(),any())).thenReturn(1);
         var claims=gateway.claimExpired(2,lease); assertEquals(1,claims.size()); assertEquals(id,claims.getFirst().artifact().videoId());
         assertThrows(UnsupportedOperationException.class,claims::clear);
-        when(repository.claim(eq(id),any(),any())).thenReturn(0); assertThrows(DownloadException.class,()->gateway.claimExpired(2,lease));
+        clearInvocations(repository);
+        when(repository.claim(eq(id),any(),any())).thenReturn(0);
+        assertTrue(gateway.claimExpired(2,lease).isEmpty());
+        verify(repository,never()).prune(any());
         assertFalse(gateway.deleted(id,token)); when(repository.deleted(id,token)).thenReturn(1); assertTrue(gateway.deleted(id,token));
         assertFalse(gateway.retryCleanup(id,token,lease)); when(repository.retry(eq(id),eq(token),any())).thenReturn(1);
         assertTrue(gateway.retryCleanup(id,token,lease));

@@ -12,6 +12,8 @@ Reserva e renovação obtêm lock do vídeo, compartilhado com a seleção de li
 
 Limpeza seleciona somente resultados COMPLETED expirados, sem reserva válida nem exclusão concluída. Usa `FOR UPDATE SKIP LOCKED`, token/lease de limpeza e horário da próxima tentativa. A camada S3 futura executará exclusão fora da transação e só confirmará sob token vigente; falha mantém obrigação de retry. Posse vencida é recuperável após crash e não pode confirmar operação de outra instância.
 
+A seleção inicial é apenas uma lista de candidatos. Depois de adquirir o lock do vídeo, um `UPDATE` condicional revalida os critérios e as reservas ativas em uma nova instrução sob `READ COMMITTED`. Isso inclui reservas confirmadas entre a leitura inicial e a aquisição do lock; um candidato que perdeu elegibilidade é ignorado, sem gerar autorização de exclusão.
+
 `result_deleted_at` indica confirmação de exclusão física. Não apaga referência histórica, status COMPLETED, datas, idempotência, inbox ou outbox. Limpeza física será assíncrona e poderá ocorrer depois das24h sem ampliar a disponibilidade. Originais, órfãos do worker e exclusão de conta têm regras próprias.
 
 ## Limites e testes
