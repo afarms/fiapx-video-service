@@ -83,7 +83,7 @@ Para EKS, configurar probes HTTP em `/actuator/health/liveness` e `/actuator/hea
 | `GET /videos?page=0&size=20` | `items`, `page`, `size`, `totalElements` do usuário autenticado |
 | `GET /videos/{id}` | `id`, `originalName`, `sizeBytes`, `status`, `createdAt` de um vídeo próprio |
 
-Enviar `Authorization: Bearer <accessToken>` obtido no login da identidade. USER e ADMIN só consultam seus próprios vídeos; `ownerId` não é aceito como filtro. O DTO público não contém a chave de armazenamento. Sem vídeos cadastrados, a lista retorna vazia; ainda não há endpoint de upload.
+Enviar `Authorization: Bearer <accessToken>` obtido no login da identidade. USER e ADMIN só consultam seus próprios vídeos; `ownerId` não é aceito como filtro. O DTO público não contém a chave de armazenamento. Sem vídeos cadastrados, a lista retorna vazia. O upload está disponível em `POST /videos` quando habilitado; consultas incluem estado atual e metadados públicos de conclusão/expiração/falha quando presentes.
 
 O serviço valida RS256, issuer, audience, sub, versão e tempo do JWT usando somente a chave pública. Antes de consultar o banco, verifica a conta e a versão atual em `POST /internal/accounts/validate`, autenticado com `X-Service-Key`. Não há cache positivo nem retry automático. Troca de credenciais e inativação impedem o próximo acesso com o token anterior.
 
@@ -124,6 +124,7 @@ Identidade, extração de imagens e notificações pertencem a serviços indepen
 ## Documentação
 
 - [Reconciliação de trabalho e resultados](docs/reconciliation.md).
+- [Ensaio local com o worker e FFmpeg](docs/local-processing-flow.md).
 - [Domínio e regras](docs/domain/videos.md).
 - [Limite arquitetural](docs/architecture/boundary.md).
 - [Clean Architecture e persistência](docs/architecture/clean-architecture.md).
