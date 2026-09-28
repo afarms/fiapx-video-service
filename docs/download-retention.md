@@ -82,6 +82,7 @@ com timeout de 10s, encerradas antes da rede. Beans ficam em BeanConfig; o core 
 bytes/headers, autorização, expiração, ausência de objeto, renovação durante transferência, proteção contra limpeza,
 desconexão de cliente, reservas concorrentes, fencing, restart e rollback. Testes unitários exercitam falhas e capacidade.
 O comportamento com AWS, proxies e implantação cloud ainda precisa ser validado com a infraestrutura completa.
+O [roteiro de validação](download-validation.md) consolida os cenários locais e o ensaio cloud pendente.
 
 ## Operação da limpeza
 
