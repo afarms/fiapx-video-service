@@ -38,7 +38,7 @@ public class UploadReconciler {
                     var owner = repository.lockByOriginalKey(object.key());
                     if (owner.isPresent()) {
                         var video = owner.get();
-                        if ("QUEUED".equals(video.getStatus()) || video.getIdempotencyKey() == null
+                        if (!"UPLOADING".equals(video.getStatus()) || video.getIdempotencyKey() == null
                                 || video.getUploadLeaseUntil().isAfter(repository.databaseTime())) return;
                     }
                     client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(object.key()).build());

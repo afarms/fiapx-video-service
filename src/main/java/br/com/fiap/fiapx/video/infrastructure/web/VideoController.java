@@ -19,9 +19,12 @@ public class VideoController {
         this.getVideo = getVideo;
         this.listVideos = listVideos;
     }
-    public record VideoResponse(UUID id, String originalName, long sizeBytes, String status, Instant createdAt) {
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    public record VideoResponse(UUID id, String originalName, long sizeBytes, String status, Instant createdAt,
+            Instant completedAt, Instant expiresAt, Instant failedAt, String failureCode) {
         static VideoResponse from(Video video) {
-            return new VideoResponse(video.id(), video.originalName(), video.sizeBytes(), video.status(), video.createdAt());
+            return new VideoResponse(video.id(), video.originalName(), video.sizeBytes(), video.status(), video.createdAt(),
+                    video.completedAt(), video.expiresAt(), video.failedAt(), video.failureCode());
         }
     }
     public record PageResponse(List<VideoResponse> items, int page, int size, long totalElements) {}

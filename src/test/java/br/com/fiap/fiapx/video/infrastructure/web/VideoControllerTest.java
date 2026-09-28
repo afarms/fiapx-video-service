@@ -28,7 +28,7 @@ class VideoControllerTest {
         assertEquals(100,result.sizeBytes()); assertEquals("UPLOADING",result.status()); assertEquals(video.createdAt(),result.createdAt());
         var page=controller.list(jwt,0,20); assertEquals(List.of(result),page.items());
         assertEquals(0,page.page()); assertEquals(20,page.size()); assertEquals(1,page.totalElements());
-        assertEquals(List.of("id","originalName","sizeBytes","status","createdAt"),Arrays.stream(result.getClass().getRecordComponents()).map(java.lang.reflect.RecordComponent::getName).toList());
+        assertEquals(List.of("id","originalName","sizeBytes","status","createdAt","completedAt","expiresAt","failedAt","failureCode"),Arrays.stream(result.getClass().getRecordComponents()).map(java.lang.reflect.RecordComponent::getName).toList());
         verify(accounts,times(2)).validate("token");
     }
 

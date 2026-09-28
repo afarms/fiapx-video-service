@@ -16,6 +16,17 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 
 class BeanConfigTest {
+    @Test void composesResultGatewayAndConsumerWithDedicatedScheduling() {
+        var config=new BeanConfig();
+        var gateway=config.processingResultsGateway(mock(SpringVideoRepository.class),config.videoMapper(),
+                mock(org.springframework.transaction.PlatformTransactionManager.class),tools.jackson.databind.json.JsonMapper.builder().build());
+        var sqs=mock(software.amazon.awssdk.services.sqs.SqsClient.class);
+        try (var consumer=config.processingResultsConsumer(sqs,gateway,tools.jackson.databind.json.JsonMapper.builder().build(),
+                "https://sqs.us-east-1.amazonaws.com/123456789012/results","fiapx-media-test")) { assertNotNull(consumer); }
+        verifyNoInteractions(sqs);
+        var scheduler=config.taskScheduler(); scheduler.initialize();
+        try { assertEquals(3,scheduler.getScheduledThreadPoolExecutor().getCorePoolSize()); } finally { scheduler.shutdown(); }
+    }
     @Test
     void composesBothQueriesThroughTheConfiguredGatewayAndMapper() {
         var config = new BeanConfig();
