@@ -1,6 +1,6 @@
 # Contratos de vídeos — atuais e propostos
 
-GET /videos, GET /videos/{id} e POST /videos (quando UPLOAD_ENABLED=true) estão implementados. O contrato de upload e VideoProcessingRequested está em [upload e recuperação](../docs/upload.md). Download e eventos de resultado/exclusão continuam propostos. Todas as operações exigem JWT válido, conta ativa e autorização por proprietário.
+GET /videos, GET /videos/{id} e POST /videos (quando UPLOAD_ENABLED=true) estão implementados. O contrato de upload e VideoProcessingRequested está em [upload e recuperação](../docs/upload.md). O download completo está implementado quando DOWNLOAD_ENABLED=true; consulte [download e retenção](../docs/download-retention.md). O consumo de resultados está documentado em [resultados de processamento](../docs/processing-results.md); exclusão distribuída continua proposta. Todas as operações exigem JWT válido, conta ativa e autorização por proprietário.
 
 | Operação | Resultado |
 | --- | --- |
@@ -9,7 +9,7 @@ GET /videos, GET /videos/{id} e POST /videos (quando UPLOAD_ENABLED=true) estão
 | GET /videos/{id} | Estado e metadados do dono |
 | GET /videos/{id}/download | Streaming do ZIP se COMPLETED e dentro de 24h |
 
-Consultas usam 400, 401, 403, 404 e 503. Upload possui contrato detalhado no guia; download ainda é proposto: 400 entrada inválida, 401 autenticação inválida, 403 conta sem acesso, 404 recurso ausente/alheio, 409 conflito de idempotência/estado, 410 resultado expirado, 413 tamanho excedido, 503 dependência necessária indisponível. Não revelar existência de vídeos de outro usuário.
+Consultas usam 400, 401, 403, 404 e 503. Upload possui contrato detalhado no guia; download usa 400 para entrada inválida, 401 para autenticação inválida, 403 para conta sem acesso, 404 para recurso ausente/alheio, 409 para estado não concluído, 410 para resultado expirado e 503 para dependência necessária indisponível ou capacidade esgotada. Range é ignorado: a resposta é sempre o ZIP completo, sem retomada. Não revelar existência de vídeos de outro usuário.
 
 Implementado publisher recuperável de VideoProcessingRequested na fila processing-work, desativado por padrão até existir consumidor. Publicação de VideoFailed e consumo de início/resultado/exclusão permanecem planejados. Envelope: eventId, eventType, schemaVersion, occurredAt, correlationId, ownerId, aggregateId e payload. Trabalho carrega referência imutável do objeto; resultado identifica tentativa e versão. Sem vídeos, senhas ou JWT em mensagens.
 

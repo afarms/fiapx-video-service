@@ -1,25 +1,84 @@
-# Reservas de download e retenção de resultados
+# Download e retenção de resultados
 
-Implementada a base transacional de coordenação. O endpoint de download, o streaming S3 e a rotina de exclusão ainda serão integrados; esta alteração não inicia downloads nem remove objetos.
+`GET /videos/{id}/download` fornece o ZIP completo quando `DOWNLOAD_ENABLED=true`.
+O endpoint valida JWT e consulta a situação atual da conta antes de reservar o resultado no PostgreSQL.
+USER e ADMIN acessam somente os próprios vídeos COMPLETED, antes de `expiresAt=completedAt+24h`.
+Não há URL pré-assinada nem exposição de bucket/chave. Interrupção exige nova requisição completa,
+com nova validação de conta, dono e prazo. `Range` é ignorado: a resposta continua sendo 200 com o arquivo inteiro.
 
-O contrato previsto é download completo pela API autenticada durante as24h após a conclusão. Interrupção exige nova tentativa desde o início; não haverá retomada parcial nesta entrega. Novas chamadas verificam conta ativa, dono, COMPLETED e prazo original. Expiração mantém status e histórico.
+## HTTP
 
-## Persistência
+Sucesso: `application/zip`, `Content-Length` persistido, `Content-Disposition: attachment; filename="frames-{id}.zip"`,
+`Cache-Control: private, no-store` e `Accept-Ranges: none`. O nome não usa conteúdo fornecido pelo usuário.
 
-`video_download_leases` registra token, vídeo, início, validade e deadline máximo de cada transferência admitida. `DownloadGateway` exige que o chamador autorize a conta antes da reserva; a persistência também filtra o dono. Referência privada validada contém bucket/chave/tamanho/checksum, sem integrar a resposta pública de consulta.
+| Situação | Status |
+| --- | --- |
+| UUID inválido | 400 |
+| JWT ausente/inválido/revogado | 401 |
+| Conta sem acesso | 403 |
+| Vídeo inexistente ou de outro dono | 404 |
+| Vídeo ainda não concluído ou FAILED | 409 |
+| Resultado expirado, após conferir dono | 410 |
+| Dependência indisponível, objeto ausente/inconsistente ou capacidade esgotada | 503 |
 
-Reserva e renovação obtêm lock do vídeo, compartilhado com a seleção de limpeza. O relógio do PostgreSQL é consultado após o lock: chegar à API antes da expiração não garante admissão se a reserva só puder ocorrer depois. No limite exato expiresAt, nova reserva é recusada. Uma reserva já admitida pode renovar além desse prazo até seu deadline; reserva vencida não ressuscita. O streaming futuro deverá renovar e abortar ao perder posse, inclusive em falhas de rede ou prazo, e liberar reserva ao terminar.
+Falhas anteriores ao envio do corpo retornam 503; o corpo pode ser vazio se a falha ocorrer na execução assíncrona.
+Depois de iniciar a resposta, a conexão termina com corpo incompleto, sem acrescentar JSON ao ZIP.
+Downloads HTTP/1.1 usam `Connection: close`, garantindo EOF imediato em falhas com Content-Length incompleto.
+O header não é enviado em HTTP/2, que delimita o corpo pelo encerramento do stream.
+O cliente deve conferir conclusão e tamanho da transferência e descartar downloads incompletos.
+Falhas de download e expiração não alteram COMPLETED, completedAt ou expiresAt.
 
-Limpeza seleciona somente resultados COMPLETED expirados, sem reserva válida nem exclusão concluída. Usa `FOR UPDATE SKIP LOCKED`, token/lease de limpeza e horário da próxima tentativa. A camada S3 futura executará exclusão fora da transação e só confirmará sob token vigente; falha mantém obrigação de retry. Posse vencida é recuperável após crash e não pode confirmar operação de outra instância.
+## Streaming e configuração
 
-A seleção inicial é apenas uma lista de candidatos. Depois de adquirir o lock do vídeo, um `UPDATE` condicional revalida os critérios e as reservas ativas em uma nova instrução sob `READ COMMITTED`. Isso inclui reservas confirmadas entre a leitura inicial e a aquisição do lock; um candidato que perdeu elegibilidade é ignorado, sem gerar autorização de exclusão.
+O serviço usa um buffer de 64 KiB por transferência, sem arquivo temporário nem materialização do ZIP de até 1 GiB.
+Leitores S3 e renovações têm executores separados e capacidade limitada; a escrita servlet é não bloqueante.
+Um cliente lento não mantém uma escrita bloqueante impedindo o monitor de validade.
+O cliente S3 dedicado possui conexão/aquisição de 3s, leitura de 10s e limite de abertura da chamada de 15s.
+O tamanho informado pelo S3 deve corresponder ao resultado persistido antes de enviar os headers de sucesso.
 
-`result_deleted_at` indica confirmação de exclusão física. Não apaga referência histórica, status COMPLETED, datas, idempotência, inbox ou outbox. Limpeza física será assíncrona e poderá ocorrer depois das24h sem ampliar a disponibilidade. Originais, órfãos do worker e exclusão de conta têm regras próprias.
+| Variável | Padrão | Limite |
+| --- | --- | --- |
+| DOWNLOAD_ENABLED | false | Habilitação explícita |
+| DOWNLOAD_CONCURRENCY | 2 | 1–32 por instância; excesso recebe 503 |
+| DOWNLOAD_LEASE_SECONDS | 120 | 30–86400 |
+| DOWNLOAD_HEARTBEAT_SECONDS | 30 | Positivo, no máximo um terço da lease |
+| DOWNLOAD_MAXIMUM_SECONDS | 1800 | Pelo menos a lease, no máximo 86400 |
 
-## Limites e testes
+Região e credenciais seguem `AWS_REGION` e `UPLOAD_AWS_PROFILE`/cadeia padrão AWS, inclusive quando upload e consumo
+de resultados estão desativados. Não copiar credenciais para o `.env`. A role precisa de GetObject na referência
+privada de `results/*`. Este incremento não adiciona DeleteObject nem executa limpeza física.
 
-Migration incremental005 preserva as anteriores. Beans configurados centralmente em BeanConfig; gateway sem Spring/JPA no core. Todas as operações do adapter usam transação própria com timeout de10s, encerrada antes do retorno; não manter transação aberta durante rede.
+O monitor usa relógio monotônico e começa a contar antes da admissão/renovação, conservadoramente em relação
+ao relógio do PostgreSQL. Interrompe 5s antes do limite local da lease/deadline; por isso a duração útil pode ser menor
+que o máximo configurado. A renovação não estende o deadline original. Falha ou perda de posse interrompe a leitura S3.
+O monitor não depende do executor de renovação: uma chamada de banco lenta não impede a interrupção por prazo.
+Desconexão, erro, timeout e desligamento abortam a leitura, sem drenar o restante do objeto.
+A reserva só é liberada após encerrar o leitor. Se a liberação falhar, a validade persistida permite recuperação.
 
-Durations aceitas são segundos inteiros positivos até86400; deadline deve ser maior ou igual à lease. São validações técnicas do gateway, não promessa de download com duração de24h. O limite e heartbeat do streaming serão configurados na integração HTTP. Seleção de limpeza em lotes de1–100; o executor futuro deve respeitar o prazo de cada claim antes de iniciar I/O e não reservar trabalho além da capacidade disponível.
+## Persistência e limpeza futura
 
-`make verify` testa gates e isolamento; `make integration` testa PostgreSQL real em schemas isolados: dono/expiração, reservas simultâneas, limpeza concorrente, deadline, restart, retry/fencing e rollback. AWS e identidade permanecem simuladas nesses testes. A limpeza física e a proteção efetiva de uma transferência HTTP ainda não são verificadas por esta base de persistência.
+`video_download_leases` registra token, vídeo, início, validade e deadline de cada transferência.
+Admissão, renovação e claim de limpeza compartilham o lock do vídeo. O relógio do banco é consultado depois do lock:
+chegar à API antes da expiração não garante admissão se a reserva ocorrer depois. `now >= expiresAt` recusa nova reserva.
+Uma transferência admitida pode renovar após expiresAt até seu deadline. Alteração posterior da conta não revoga
+essa requisição já admitida; cada nova requisição revalida identidade. Reservas vencidas não ressuscitam.
+
+A base transacional de limpeza seleciona resultados COMPLETED expirados, sem reserva válida nem exclusão concluída,
+com `FOR UPDATE SKIP LOCKED`. Após adquirir o lock, um UPDATE condicional revalida critérios e reservas em nova
+instrução sob READ COMMITTED. Assim, também enxerga reservas confirmadas depois do snapshot inicial da seleção.
+Token e lease impedem confirmação por uma instância antiga. Falha permite retry; crash permite recuperar a posse.
+
+O executor de exclusão S3 ainda será integrado. `result_deleted_at` registrará confirmação sem apagar referência
+histórica, status, datas, idempotência, inbox ou outbox. Atraso da limpeza não amplia a disponibilidade de 24h.
+Originais, órfãos do worker e exclusão de conta têm regras próprias.
+
+Migration incremental 005 preserva as anteriores. As operações de reserva/limpeza têm transações próprias,
+com timeout de 10s, encerradas antes da rede. Beans ficam em BeanConfig; o core permanece sem Spring/JPA/SDK.
+
+## Validação
+
+`make verify` executa testes unitários, isolamento do core e gates de cobertura de 90%.
+`make integration` usa HTTP e PostgreSQL reais em schemas isolados, com identidade e S3 simulados:
+bytes/headers, autorização, expiração, ausência de objeto, renovação durante transferência, proteção contra limpeza,
+desconexão de cliente, reservas concorrentes, fencing, restart e rollback. Testes unitários exercitam falhas e capacidade.
+O comportamento com AWS, proxies e implantação cloud ainda precisa ser validado com a infraestrutura completa.

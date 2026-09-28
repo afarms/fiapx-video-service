@@ -59,6 +59,38 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 @EnableScheduling
 public class BeanConfig {
     @Bean
+    @ConditionalOnProperty(name = "download.enabled", havingValue = "true")
+    public br.com.fiap.fiapx.video.core.usecase.DownloadVideoUseCase downloadVideoUseCase(
+            AuthorizeVideoAccessUseCase authorize, br.com.fiap.fiapx.video.core.gateway.DownloadGateway gateway,
+            @Value("${download.lease-seconds:120}") long lease, @Value("${download.maximum-seconds:1800}") long maximum) {
+        return new br.com.fiap.fiapx.video.core.usecase.DownloadVideoUseCase(authorize, gateway,
+                Duration.ofSeconds(lease), Duration.ofSeconds(maximum));
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "download.enabled", havingValue = "true")
+    public DownloadStorage downloadStorage(AwsCredentialsProvider credentials,
+            @Value("${upload.region:us-east-1}") String region) {
+        return new S3DownloadStorage(S3Client.builder().region(Region.of(region)).credentialsProvider(credentials)
+                .httpClientBuilder(software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
+                        .connectionTimeout(Duration.ofSeconds(3)).socketTimeout(Duration.ofSeconds(10))
+                        .connectionAcquisitionTimeout(Duration.ofSeconds(3)))
+                .overrideConfiguration(c -> c.apiCallTimeout(Duration.ofSeconds(15))
+                        .apiCallAttemptTimeout(Duration.ofSeconds(10))).build());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "download.enabled", havingValue = "true")
+    public br.com.fiap.fiapx.video.infrastructure.web.DownloadTransfers downloadTransfers(
+            br.com.fiap.fiapx.video.core.gateway.DownloadGateway gateway, DownloadStorage storage,
+            @Value("${download.concurrency:2}") int concurrency,
+            @Value("${download.lease-seconds:120}") long lease,
+            @Value("${download.maximum-seconds:1800}") long maximum,
+            @Value("${download.heartbeat-seconds:30}") long heartbeat) {
+        return new br.com.fiap.fiapx.video.infrastructure.web.DownloadTransfers(gateway, storage, concurrency,
+                Duration.ofSeconds(lease), Duration.ofSeconds(maximum), Duration.ofSeconds(heartbeat));
+    }
+    @Bean
     public br.com.fiap.fiapx.video.infrastructure.persistence.mapper.DownloadMapper downloadMapper() {
         return new br.com.fiap.fiapx.video.infrastructure.persistence.mapper.DownloadMapper();
     }
@@ -205,7 +237,7 @@ public class BeanConfig {
     }
 
     @Bean
-    @ConditionalOnExpression("${upload.enabled:false} or ${results.enabled:false}")
+    @ConditionalOnExpression("${upload.enabled:false} or ${results.enabled:false} or ${download.enabled:false}")
     public AwsCredentialsProvider uploadCredentials(@Value("${upload.aws-profile:}") String profile) {
         return profile.isBlank() ? DefaultCredentialsProvider.builder().build() : ProfileCredentialsProvider.create(profile);
     }

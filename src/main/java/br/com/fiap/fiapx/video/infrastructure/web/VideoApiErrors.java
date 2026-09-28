@@ -4,6 +4,17 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.http.*;
 @RestControllerAdvice
 public class VideoApiErrors {
+    @ExceptionHandler(DownloadException.class)
+    public ResponseEntity<ProblemDetail> download(DownloadException exception) {
+        var status = switch (exception.reason()) {
+            case NOT_READY -> HttpStatus.CONFLICT;
+            case EXPIRED -> HttpStatus.GONE;
+            case UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
+        };
+        var problem = ProblemDetail.forStatusAndDetail(status, status.getReasonPhrase());
+        problem.setProperty("code", "DOWNLOAD_" + exception.reason().name());
+        return ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store").body(problem);
+    }
     @ExceptionHandler(UploadException.class)
     public ResponseEntity<ProblemDetail> upload(UploadException exception) {
         var status = switch (exception.reason()) {

@@ -4,7 +4,7 @@ Domínio responsável pela submissão de vídeos, metadados, estado público do 
 
 ## Build e testes unitários
 
-A [base de reservas de download e retenção](docs/download-retention.md) coordena transferências e limpeza no PostgreSQL. O endpoint de download e a exclusão assíncrona no S3 ainda não estão ativados.
+O [download autenticado de ZIP e suas reservas](docs/download-retention.md) está implementado, desativado por padrão (`DOWNLOAD_ENABLED=false`). Inclui streaming completo, controle de prazo e proteção contra limpeza concorrente. A exclusão assíncrona no S3 ainda será integrada.
 
 Pré-requisitos: JDK 21 e acesso ao Maven Central no primeiro build. No Git Bash, a partir da raiz:
 
@@ -57,7 +57,7 @@ O alvo run carrega o `.env` com Bash e inicia spring-boot:run; não depende de p
 
 Saúde: `/actuator/health`, `/actuator/health/liveness` e `/actuator/health/readiness`. Readiness inclui o banco; essas rotas são fornecidas pelo Actuator, sem controllers próprios.
 
-O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica 001 a 004 na inicialização. A migration 002 acrescenta UPLOADING/QUEUED, intenção permanente, tentativas e outbox, preservando registros legados. Registrar metadados não confirma aceite: é necessário original persistido e commit de QUEUED/outbox. A migration 003 acrescenta estados de processamento, versão, inbox e metadados de resultado, preservando o recibo original de aceite. A migration 004 registra a contagem e a data dos reagendamentos de trabalho sem resultado.
+O banco usa `postgres:17.11-alpine3.24`, volume persistente e bind apenas em localhost. Liquibase aplica 001 a 005 na inicialização. A migration 002 acrescenta UPLOADING/QUEUED, intenção permanente, tentativas e outbox, preservando registros legados. Registrar metadados não confirma aceite: é necessário original persistido e commit de QUEUED/outbox. A migration 003 acrescenta estados de processamento, versão, inbox e metadados de resultado, preservando o recibo original de aceite. A migration 004 registra a contagem e a data dos reagendamentos de trabalho sem resultado.
 
 ```bash
 docker compose logs --tail=100 video
