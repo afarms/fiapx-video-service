@@ -1,6 +1,6 @@
 # FIAP X — Serviço de vídeos
 
-Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui migrations Liquibase e testes unitários. Consultas autenticadas e upload com idempotência, S3 e outbox/SQS estão implementados, com publicação desativada por padrão. Integração AWS real, processamento e download permanecem pendentes. Consulte [upload e recuperação](docs/upload.md).
+Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui migrations Liquibase e testes unitários. Consultas autenticadas e upload com idempotência, S3 e outbox/SQS estão implementados, com publicação desativada por padrão. O produtor foi validado com PostgreSQL e S3/SQS reais; processamento e download permanecem pendentes. Consulte [upload e recuperação](docs/upload.md).
 
 ## Build e testes unitários
 
@@ -115,7 +115,7 @@ AuthorizeVideoAccessUseCase e AccountAccessGateway mantêm a decisão de autoriz
 
 - Registrar vídeo vinculado ao usuário autenticado e validar limites de upload.
 - Persistir aceite e intenção de processamento de forma transacional.
-- Publicar trabalho e consumir resultados por SQS, com idempotência.
+- Consumir resultados por SQS, com idempotência; publicação de trabalho já implementada com outbox.
 - Listar vídeos do próprio usuário e liberar download durante 24 horas após conclusão.
 - Limpar seus registros e arquivos quando o usuário for excluído.
 
@@ -128,4 +128,4 @@ Identidade, extração de imagens e notificações pertencem a serviços indepen
 - [Clean Architecture e persistência](docs/architecture/clean-architecture.md).
 - [Contratos propostos](contracts/README.md).
 
-A visão integrada, requisitos do desafio, stack compartilhada e Terraform pertencem ao repositório fiapx-infra. Este serviço possui build independente e integração AWS do upload ainda requer validação remota.
+A visão integrada, requisitos do desafio, stack compartilhada e Terraform pertencem ao repositório fiapx-infra. Este serviço possui build independente. O ensaio AWS opcional do upload está documentado no guia de upload.

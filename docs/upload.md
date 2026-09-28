@@ -81,4 +81,12 @@ O parser multipart usa um subdiretório exclusivo por instância, protegido por 
 
 A integração usa PostgreSQL e HTTP reais, mas simula identidade/S3/SQS. Verifica migrations, preservação de legados, idempotência, transação/outbox, retomada, restart e locks. Não comprova as permissões e o transporte na AWS; essa validação remota permanece separada. Processamento, resultados, ZIP/download e exclusão distribuída ainda não são implementados por este incremento.
 
+### Ensaio AWS opcional
+
+`UPLOAD_AWS_TEST_APPROVED=true make integration-aws` usa o perfil `fiapx-video-local`, região `us-east-1`, bucket `fiapx-media-files` e fila `fiapx-processing-work` da mesma conta da role. Executar somente em ambiente de desenvolvimento sem consumidor ativo e após autorizar essas gravações. Não faz parte de `make integration`, da CI ou do build Docker.
+
+Cria até três objetos sintéticos menores que 1 MiB sob um owner UUID exclusivo, usa schemas locais isolados e remove os objetos/schema ao encerrar. Identidade é simulada; HTTP, SQL e chamadas S3/SQS são reais. Exercita replay, falha SQL após PUT, retomada após restart, limpeza restrita ao prefixo de teste e preservação do original aceito. O relógio da limpeza é avançado apenas no teste para evitar espera de 15 minutos.
+
+Envia duas mensagens do mesmo evento ao SQS, simulando perda da primeira confirmação para verificar reenvio estável. Não consome nem apaga mensagens; elas permanecem até a retenção de quatro dias. Os arquivos sintéticos não são vídeos válidos para o worker e são removidos ao final; por isso este ensaio não deve ser executado com consumidor ativo. A resposta SendMessage comprova aceite pelo SQS, não processamento.
+
 Referências: [perfis do SDK AWS](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials-profiles.html), [upload de streams](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/best-practices-s3-uploads.html).

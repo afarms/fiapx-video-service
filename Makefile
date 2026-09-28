@@ -3,7 +3,7 @@ MVNW := bash ./mvnw
 ENV_FILE := $(CURDIR)/.env
 .DEFAULT_GOAL := install
 
-.PHONY: install verify integration image config-check up down run package
+.PHONY: install verify integration integration-aws image config-check up down run package
 
 # Build, test and install the artifact in the local Maven repository.
 install:
@@ -16,6 +16,10 @@ verify:
 # Existing .env PostgreSQL, isolated schemas; S3/SQS and identity are mocked.
 integration:
 	bash scripts/test-upload-postgres.sh
+
+# Explicit opt-in: creates test objects and sends messages to the configured AWS resources.
+integration-aws:
+	bash scripts/test-upload-aws.sh
 
 image:
 	docker build -t fiapx-video-service:local .

@@ -80,8 +80,11 @@ class UploadPostgresIT {
                 + Base64.getEncoder().encodeToString(generator.generateKeyPair().getPublic().getEncoded()) + "\n-----END PUBLIC KEY-----");
         startApplication();
     }
+    Class<?> boundaries() { return Boundaries.class; }
+    String bucket() { return "fiapx-media-test"; }
+    String awsProfile() { return ""; }
     void startApplication() {
-        context = new SpringApplicationBuilder(VideoApplication.class, Boundaries.class).run(
+        context = new SpringApplicationBuilder(VideoApplication.class, boundaries()).run(
                 "--server.port=0", "--spring.datasource.url=" + System.getenv("UPLOAD_TEST_DB_URL"),
                 "--spring.datasource.username=" + System.getenv("UPLOAD_TEST_DB_USERNAME"),
                 "--spring.datasource.password=" + System.getenv("UPLOAD_TEST_DB_PASSWORD"),
@@ -89,7 +92,7 @@ class UploadPostgresIT {
                 "--spring.liquibase.default-schema=" + schema,
                 "--spring.jpa.properties.hibernate.default_schema=" + schema,
                 "--identity.service-key=" + "x".repeat(32), "--identity.jwt.public-key=" + publicKey.toUri(),
-                "--upload.enabled=true", "--upload.bucket=fiapx-media-test", "--upload.aws-profile=",
+                "--upload.enabled=true", "--upload.bucket=" + bucket(), "--upload.aws-profile=" + awsProfile(),
                 "--upload.publisher-enabled=false", "--upload.cleanup-enabled=false",
                 "--upload.temp-directory=" + temporary.resolve("staging"), "--springdoc.api-docs.enabled=false");
         jdbc = context.getBean(JdbcTemplate.class);
