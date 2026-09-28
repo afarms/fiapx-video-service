@@ -59,6 +59,16 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 @EnableScheduling
 public class BeanConfig {
     @Bean
+    @ConditionalOnProperty(name = {"upload.enabled", "upload.publisher-enabled", "upload.processing-reconcile-enabled"}, havingValue = "true")
+    public br.com.fiap.fiapx.video.infrastructure.messaging.ProcessingReconciler processingReconciler(
+            SpringOutboxRepository repository, PlatformTransactionManager manager) {
+        var tx = new TransactionTemplate(manager);
+        tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.setTimeout(10);
+        return new br.com.fiap.fiapx.video.infrastructure.messaging.ProcessingReconciler(repository, tx);
+    }
+
+    @Bean
     public ProcessingResultsGateway processingResultsGateway(SpringVideoRepository repository,VideoMapper mapper,
             PlatformTransactionManager manager,JsonMapper json) {
         var tx=new TransactionTemplate(manager);

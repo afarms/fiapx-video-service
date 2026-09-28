@@ -247,7 +247,7 @@ class UploadPostgresIT {
              var sql = connection.createStatement()) {
             sql.execute("CREATE SCHEMA " + upgradeSchema); upgradeCreated = true;
             sql.execute("SET search_path TO " + upgradeSchema);
-            for(var change : List.of("001-create-videos.sql", "002-upload-intentions-outbox.sql", "003-processing-results.sql")) {
+            for(var change : List.of("001-create-videos.sql", "002-upload-intentions-outbox.sql", "003-processing-results.sql", "004-processing-reconciliation.sql")) {
                 try(var source = getClass().getResourceAsStream("/db/changelog/changes/" + change)) {
                     sql.execute(new String(source.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
                 }
@@ -290,7 +290,7 @@ class UploadPostgresIT {
         String checksum=jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='002-upload-intentions-outbox'",String.class);
         context.close(); startApplication();
         assertEquals(checksum,jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='002-upload-intentions-outbox'",String.class));
-        assertEquals(3,jdbc.queryForObject("SELECT count(*) FROM databasechangelog",Integer.class));
+        assertEquals(4,jdbc.queryForObject("SELECT count(*) FROM databasechangelog",Integer.class));
         var response=get(a.owner(),"/"+a.id()); assertEquals(200,response.statusCode()); var body=json.readTree(response.body());
         assertEquals("COMPLETED",body.path("status").asString());
         // PostgreSQL timestamptz stores microseconds; timestamps retain the producer's expiration, not receive time.
@@ -365,7 +365,56 @@ class UploadPostgresIT {
         assertEquals("QUEUED",jdbc.queryForObject("SELECT status FROM videos WHERE id=?",String.class,b.id())); assertEquals(0,inbox(b));
     }
 
-    @Test @Order(11) void resultConsumerCanStartWithUploadsDisabledAndOnlyMockedTransport() {
+    br.com.fiap.fiapx.video.infrastructure.messaging.ProcessingReconciler reconciler() {
+        return new br.com.fiap.fiapx.video.infrastructure.config.BeanConfig().processingReconciler(
+                context.getBean(SpringOutboxRepository.class), context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+    }
+
+    @Test @Order(11) void missingTransportIsRecoveredOnceAcrossReplicasWithOriginalEnvelope() throws Exception {
+        var a=accepted();
+        String original=jdbc.queryForObject("SELECT payload::text FROM video_outbox WHERE video_id=?",String.class,a.id());
+        jdbc.update("UPDATE video_outbox SET published_at=clock_timestamp()-interval '7 hours' WHERE video_id=?",a.id());
+        try(var pool=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var start=new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<Integer> scan=()->{start.await(); return reconciler().reconcile();};
+            var first=pool.submit(scan); var second=pool.submit(scan); start.countDown();
+            assertEquals(1, first.get(10,java.util.concurrent.TimeUnit.SECONDS)+second.get(10,java.util.concurrent.TimeUnit.SECONDS));
+        }
+        assertEquals(1,jdbc.queryForObject("SELECT reconciliation_count FROM video_outbox WHERE video_id=?",Integer.class,a.id()));
+        assertEquals(0,reconciler().reconcile());
+        assertEquals(original,jdbc.queryForObject("SELECT payload::text FROM video_outbox WHERE video_id=?",String.class,a.id()));
+        var sqs=mock(SqsClient.class);
+        new OutboxDispatcher(context.getBean(SpringOutboxRepository.class),context.getBean(TransactionTemplate.class),sqs,
+                "https://sqs.us-east-1.amazonaws.com/000000000000/work").dispatch();
+        var sent=org.mockito.ArgumentCaptor.forClass(SendMessageRequest.class);
+        verify(sqs,atLeastOnce()).sendMessage(sent.capture());
+        assertTrue(sent.getAllValues().stream().anyMatch(r->json.readTree(r.messageBody()).equals(json.readTree(original))));
+        assertEquals(0,reconciler().reconcile());
+        context.close(); startApplication();
+        assertEquals(1,jdbc.queryForObject("SELECT reconciliation_count FROM video_outbox WHERE video_id=?",Integer.class,a.id()));
+        results().apply(ProcessingFixtures.decode(result(a,"ProcessingStarted",1)));
+        jdbc.update("UPDATE video_outbox SET published_at=clock_timestamp()-interval '7 hours' WHERE video_id=?",a.id());
+        assertEquals(1,reconciler().reconcile());
+        assertEquals(2,jdbc.queryForObject("SELECT reconciliation_count FROM video_outbox WHERE video_id=?",Integer.class,a.id()));
+    }
+
+    @Test @Order(12) void reconciliationRollbackAndTerminalStatesPreservePublication() throws Exception {
+        var a=accepted();
+        jdbc.update("UPDATE video_outbox SET published_at=clock_timestamp()-interval '7 hours' WHERE video_id=?",a.id());
+        jdbc.execute("ALTER TABLE video_outbox ADD CONSTRAINT reject_reconcile_test CHECK(video_id<>'"+a.id()+"'::uuid OR reconciliation_count=0)");
+        try {
+            assertThrows(RuntimeException.class,()->reconciler().reconcile());
+            assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM video_outbox WHERE video_id=? AND published_at IS NOT NULL",Integer.class,a.id()));
+            assertEquals(0,jdbc.queryForObject("SELECT reconciliation_count FROM video_outbox WHERE video_id=?",Integer.class,a.id()));
+        } finally { jdbc.execute("ALTER TABLE video_outbox DROP CONSTRAINT reject_reconcile_test"); }
+        results().apply(ProcessingFixtures.decode(result(a,"ProcessingFailed",2)));
+        var b=accepted(); results().apply(ProcessingFixtures.decode(result(b,"ProcessingCompleted",2)));
+        jdbc.update("UPDATE video_outbox SET published_at=clock_timestamp()-interval '7 hours' WHERE video_id=?",b.id());
+        assertEquals(0,reconciler().reconcile());
+        assertEquals(0,jdbc.queryForObject("SELECT sum(reconciliation_count) FROM video_outbox WHERE video_id IN (?,?)",Long.class,a.id(),b.id()));
+    }
+
+    @Test @Order(13) void resultConsumerCanStartWithUploadsDisabledAndOnlyMockedTransport() {
         context.close(); resultsOnly=true; startApplication();
         assertNotNull(context.getBean(ProcessingResultsConsumer.class));
         assertTrue(context.getBeansOfType(UploadGateway.class).isEmpty());

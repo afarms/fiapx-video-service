@@ -7,6 +7,23 @@ import java.util.*;
 
 public interface SpringOutboxRepository extends JpaRepository<OutboxEntity, UUID> {
     @Query(value = """
+            SELECT o.* FROM video_outbox o JOIN videos v ON v.id=o.video_id
+            WHERE v.status IN ('QUEUED','PROCESSING') AND v.accepted_at IS NOT NULL
+                AND o.published_at <= clock_timestamp()-interval '6 hours'
+                AND (o.lease_until IS NULL OR o.lease_until <= clock_timestamp())
+            ORDER BY o.published_at, o.event_id LIMIT 100 FOR UPDATE OF v,o SKIP LOCKED
+            """, nativeQuery = true)
+    List<OutboxEntity> awaitingResult();
+
+    @Modifying
+    @Query(value = """
+            UPDATE video_outbox SET published_at=NULL, available_at=clock_timestamp(),
+                lease_token=NULL, lease_until=NULL, reconciled_at=clock_timestamp(),
+                reconciliation_count=reconciliation_count+1 WHERE event_id=:id
+            """, nativeQuery = true)
+    int reschedule(@Param("id") UUID id);
+
+    @Query(value = """
             SELECT * FROM video_outbox WHERE published_at IS NULL AND available_at <= clock_timestamp()
                 AND (lease_until IS NULL OR lease_until <= clock_timestamp())
             ORDER BY available_at, event_id LIMIT :batch FOR UPDATE SKIP LOCKED
