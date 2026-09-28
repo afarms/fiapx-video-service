@@ -2,3 +2,6 @@ databaseChangeLog:
   - include:
       file: changes/001-create-videos.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/002-upload-intentions-outbox.sql
+      relativeToChangelogFile: true

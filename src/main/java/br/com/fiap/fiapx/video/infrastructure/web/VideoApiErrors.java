@@ -4,6 +4,45 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.http.*;
 @RestControllerAdvice
 public class VideoApiErrors {
+    @ExceptionHandler(UploadException.class)
+    public ResponseEntity<ProblemDetail> upload(UploadException exception) {
+        var status = switch (exception.reason()) {
+            case INVALID -> HttpStatus.BAD_REQUEST;
+            case TOO_LARGE -> HttpStatus.CONTENT_TOO_LARGE;
+            case CONTENT_CONFLICT, IN_PROGRESS -> HttpStatus.CONFLICT;
+            case UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
+        };
+        var problem = ProblemDetail.forStatusAndDetail(status, status.getReasonPhrase());
+        problem.setProperty("code", "UPLOAD_" + exception.reason().name());
+        return ResponseEntity.status(status).body(problem);
+    }
+
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ProblemDetail> tooLarge(Exception exception) {
+        return upload(new UploadException(UploadException.Reason.TOO_LARGE));
+    }
+
+    @ExceptionHandler(org.springframework.web.multipart.MultipartException.class)
+    public ResponseEntity<ProblemDetail> malformedMultipart(Exception exception) {
+        return upload(new UploadException(UploadException.Reason.INVALID));
+    }
+
+    @ExceptionHandler({org.springframework.web.bind.MissingRequestHeaderException.class,
+            org.springframework.web.multipart.support.MissingServletRequestPartException.class,
+            jakarta.servlet.ServletException.class})
+    public ResponseEntity<ProblemDetail> malformedUpload(Exception exception) {
+        return upload(new UploadException(UploadException.Reason.INVALID));
+    }
+
+    @ExceptionHandler(java.io.IOException.class)
+    public ResponseEntity<ProblemDetail> uploadReadFailure(Exception exception) {
+        return upload(new UploadException(UploadException.Reason.UNAVAILABLE));
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> unsupportedMedia(Exception exception) {
+        return response(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+    }
     @ExceptionHandler(VideoAccessException.class)
     public ResponseEntity<ProblemDetail> access(VideoAccessException exception) {
         return response(switch (exception.reason()) {
@@ -27,6 +66,8 @@ public class VideoApiErrors {
     private ResponseEntity<ProblemDetail> response(HttpStatus status) {
         var builder = ResponseEntity.status(status);
         if (status == HttpStatus.UNAUTHORIZED) builder.header(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
-        return builder.body(ProblemDetail.forStatusAndDetail(status, status.getReasonPhrase()));
+        var problem = ProblemDetail.forStatusAndDetail(status, status.getReasonPhrase());
+        problem.setProperty("code", status.name());
+        return builder.body(problem);
     }
 }

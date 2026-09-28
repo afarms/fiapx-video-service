@@ -1,6 +1,6 @@
 # Domínio de vídeos
 
-Estado: modelo inicial no core e adaptador Spring Data JPA na infraestrutura implementados; fluxo funcional abaixo ainda em evolução. RF-01, RF-03, RF-05 e RT-01 orientam este domínio.
+Estado: consultas autenticadas e produtor de upload implementados; processamento, resultados e exclusão ainda em evolução. RF-01, RF-03, RF-05 e RT-01 orientam este domínio.
 
 ## Regras confirmadas
 
@@ -10,13 +10,13 @@ Entrada: MP4, AVI, MOV, MKV, WMV, FLV ou WebM; até 100.000.000 bytes e 300 segu
 
 Saída disponível até completedAt + 24h. Expiração de download não altera sucesso do processamento. A exclusão definitiva de usuário prevalece sobre a disponibilidade normal.
 
-## Modelo proposto
+## Modelo atual e evolução prevista
 
-Incremento atual: `Video` imutável com id/ownerId UUID, originalName (até 255 caracteres Java), originalObjectKey (até 1024), sizeBytes e createdAt. Estado inicial UPLOADING. Validação de extensão aceita os sete formatos sem diferenciar maiúsculas/minúsculas; rejeita nome contendo caminho e tamanho fora de 1–100.000.000 bytes. Isso não valida conteúdo/duração. `VideoGateway` define inserção e consulta por id + ownerId. `VideoGatewayAdapter` implementa o contrato com Spring Data JPA e conversão domínio/entidade; as consultas HTTP autenticadas estão implementadas, sem upload ou download.
+Incremento atual: `Video` imutável com id/ownerId UUID, originalName (até 255 caracteres Java), originalObjectKey (até 1024), sizeBytes, createdAt e estado UPLOADING/QUEUED. Validação de extensão aceita os sete formatos sem diferenciar maiúsculas/minúsculas; rejeita nome contendo caminho e tamanho fora de 1–100.000.000 bytes. Isso não valida conteúdo/duração. `VideoGateway` define inserção e consulta por id + ownerId. `VideoGatewayAdapter` implementa o contrato com Spring Data JPA e conversão domínio/entidade; consultas e upload autenticados estão implementados; download permanece pendente. UploadIntent representa chave permanente, fingerprint, token/prazo de tentativa e aceite.
 
-Migration inicial cria `videos`, chave única de objeto e índice por dono/data/id. Apenas UPLOADING é permitido nesta etapa; a ampliação abaixo virá por novos changesets junto dos contratos de transição. Nenhuma FK aponta para banco de identidade. Retentativa de INSERT duplicado não sobrescreve o registro.
+Migration inicial cria `videos`, chave única de objeto e índice por dono/data/id. A migration 002 acrescenta QUEUED, intenção por dono/chave, tentativas e outbox sem reescrever a 001. Demais estados abaixo são futuros. Nenhuma FK aponta para banco de identidade. Retentativa de INSERT duplicado não sobrescreve o registro.
 
-Video: id UUID, ownerId imutável, originalObjectKey, resultObjectKey, originalName, sizeBytes, durationSeconds, status, attempt, version, createdAt, completedAt, expiresAt e errorCode sanitizado. Tabelas adicionais: outbox por destino, inbox de eventos processados, chaves de idempotência e controle de exclusões.
+Evolução planejada do Video: id UUID, ownerId imutável, originalObjectKey, resultObjectKey, originalName, sizeBytes, durationSeconds, status, attempt, version, createdAt, completedAt, expiresAt e errorCode sanitizado. Tabelas adicionais: outbox por destino, inbox de eventos processados, chaves de idempotência e controle de exclusões.
 
 Estados: UPLOADING -> QUEUED -> PROCESSING -> COMPLETED ou FAILED. Mídia inválida descoberta pelo worker termina em FAILED e gera aviso. Janela de disponibilidade é atributo separado do estado. Controle de versão e tentativa rejeita eventos antigos e transições regressivas.
 
@@ -40,4 +40,4 @@ Ao receber UserDeletionRequested, persistir bloqueio local do ownerId, impedir n
 
 ## Verificações previstas
 
-Testar isolamento de dois usuários; 100 MB e 300 segundos nos limites e acima deles; duplicação e ordem de eventos; commit sem publicação; perda de resposta após aceite; expiração do download; exclusão concorrente com upload/resultado; recuperação da outbox. Ainda não executadas.
+Testar isolamento de dois usuários; 100 MB e 300 segundos nos limites e acima deles; duplicação e ordem de eventos; commit sem publicação; perda de resposta após aceite; expiração do download; exclusão concorrente com upload/resultado; recuperação da outbox. Unitários e integração HTTP/PostgreSQL cobrem upload/idempotência/outbox; os testes usam S3/SQS simulados. AWS real, conteúdo/duração, resultados, expiração e exclusão permanecem pendentes.

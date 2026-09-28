@@ -34,7 +34,7 @@ SpringVideoRepository continua sendo um proxy criado pelo Spring Data JPA; não 
 
 O contrato atual é insert, não upsert. Como o UUID já existe antes de salvar, VideoEntity implementa Persistable para informar que uma instância recém-mapeada é nova. Callbacks PostPersist/PostLoad alteram apenas o indicador técnico transitório. Isso orienta Spring Data a usar persist em vez de merge, preservando a tentativa de INSERT e as restrições de unicidade. O adapter usa saveAndFlush para provocar o flush na operação; a transação atual pertence ao método do repositório.
 
-Não há pré-consulta exists para tratar duplicidade: a restrição do banco é a autoridade sob concorrência. Futuras operações de atualização devem ter contrato próprio e considerar o ciclo de vida da entidade; não reaproveitar insert como update. Quando houver vídeo + outbox, a infraestrutura deverá delimitar uma única transação envolvendo ambos.
+Não há pré-consulta exists para tratar duplicidade: a restrição do banco é a autoridade sob concorrência. Futuras operações de atualização devem ter contrato próprio e considerar o ciclo de vida da entidade; não reaproveitar insert como update. UploadGatewayAdapter usa TransactionTemplate para confirmar vídeo + outbox em uma única transação, sem englobar transferência S3. Atualizações de tentativa usam SQL condicional e horário do banco.
 
 Liquibase permanece responsável pelo schema. `ddl-auto=validate` só valida o mapeamento; não cria/altera tabelas. `open-in-view=false` impede depender de sessão JPA aberta na camada web. A migration inicial permanece inalterada.
 
@@ -44,4 +44,4 @@ Fonte: [Spring Data JPA — Persisting Entities](https://docs.spring.io/spring-d
 
 Unitários cobrem adapter com repositório simulado, mapper real, falhas e indicador de entidade nova. CoreIsolationTest compila as fontes do core apenas com JDK 21, sem bibliotecas externas ou classes da infraestrutura. Não há container Spring nesses testes.
 
-Mocks não comprovam geração da consulta, execução dos callbacks pelo Hibernate, transações ou schema real. Esses pontos dependem dos testes posteriores com PostgreSQL. Casos de uso e APIs serão criados nas capacidades funcionais; não há classes vazias para simular essas camadas.
+Mocks não comprovam geração da consulta, execução dos callbacks pelo Hibernate, transações ou schema real. Esses pontos dependem dos testes posteriores com PostgreSQL. Consultas e UploadVideoUseCase ficam no core. Storage, dispatcher, reconciliação e filtros HTTP ficam na infraestrutura, compostos por BeanConfig. make integration usa PostgreSQL/HTTP reais e simula S3/SQS; detalhes em ../upload.md.

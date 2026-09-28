@@ -13,9 +13,30 @@ spring:
       ddl-auto: validate
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
+  servlet:
+    multipart:
+      enabled: ${upload.enabled}
+      max-file-size: 100000000B
+      max-request-size: 101000000B
+      file-size-threshold: 0B
+      resolve-lazily: true
 server:
   port: ${SERVER_PORT:8080}
   shutdown: graceful
+upload:
+  enabled: ${UPLOAD_ENABLED:false}
+  region: ${AWS_REGION:us-east-1}
+  aws-profile: ${UPLOAD_AWS_PROFILE:}
+  bucket: ${MEDIA_BUCKET_NAME:}
+  queue-url: ${PROCESSING_QUEUE_URL:}
+  publisher-enabled: ${UPLOAD_PUBLISHER_ENABLED:false}
+  cleanup-enabled: ${UPLOAD_CLEANUP_ENABLED:true}
+  temp-directory: ${UPLOAD_TEMP_DIRECTORY:.local/uploads}
+  concurrency: ${UPLOAD_CONCURRENCY:2}
+  disk-reserve-bytes: ${UPLOAD_DISK_RESERVE_BYTES:500000000}
+  lease-seconds: ${UPLOAD_LEASE_SECONDS:300}
+  publisher-delay-ms: ${UPLOAD_PUBLISHER_DELAY_MS:5000}
+  cleanup-delay-ms: ${UPLOAD_CLEANUP_DELAY_MS:60000}
 identity:
   url: ${IDENTITY_URL:http://localhost:8081}
   service-key: ${IDENTITY_SERVICE_KEY}

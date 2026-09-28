@@ -36,6 +36,21 @@ public class VideoEntity implements Persistable<UUID> {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    @Column(name = "idempotency_key", updatable = false)
+    private UUID idempotencyKey;
+
+    @Column(name = "content_sha256", length = 64, updatable = false)
+    private String contentSha256;
+
+    @Column(name = "upload_attempt_id")
+    private UUID uploadAttemptId;
+
+    @Column(name = "upload_lease_until")
+    private Instant uploadLeaseUntil;
+
+    @Column(name = "accepted_at")
+    private Instant acceptedAt;
+
     @Transient
     private boolean newEntity = true;
 
@@ -54,6 +69,17 @@ public class VideoEntity implements Persistable<UUID> {
         this.createdAt = createdAt;
     }
 
+    public VideoEntity(UUID id, UUID ownerId, String originalName, String originalObjectKey,
+                       long sizeBytes, String status, Instant createdAt, UUID idempotencyKey,
+                       String contentSha256, UUID uploadAttemptId, Instant uploadLeaseUntil, Instant acceptedAt) {
+        this(id, ownerId, originalName, originalObjectKey, sizeBytes, status, createdAt);
+        this.idempotencyKey = idempotencyKey;
+        this.contentSha256 = contentSha256;
+        this.uploadAttemptId = uploadAttemptId;
+        this.uploadLeaseUntil = uploadLeaseUntil;
+        this.acceptedAt = acceptedAt;
+    }
+
     @Override
     public UUID getId() { return id; }
     public UUID getOwnerId() { return ownerId; }
@@ -62,6 +88,11 @@ public class VideoEntity implements Persistable<UUID> {
     public long getSizeBytes() { return sizeBytes; }
     public String getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
+    public UUID getIdempotencyKey() { return idempotencyKey; }
+    public String getContentSha256() { return contentSha256; }
+    public UUID getUploadAttemptId() { return uploadAttemptId; }
+    public Instant getUploadLeaseUntil() { return uploadLeaseUntil; }
+    public Instant getAcceptedAt() { return acceptedAt; }
 
     @Override
     public boolean isNew() { return newEntity; }
