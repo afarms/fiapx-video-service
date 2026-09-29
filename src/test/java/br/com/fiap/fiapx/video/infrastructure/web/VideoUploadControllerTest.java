@@ -31,6 +31,7 @@ class VideoUploadControllerTest {
         when(request.getMultiFileMap()).thenReturn(map); when(request.getFiles("file")).thenReturn(List.of(file));
         when(request.getParts()).thenReturn(List.of(mock(Part.class)));
         when(request.getParameterMap()).thenReturn(Map.of());
+        when(request.getContextPath()).thenReturn("");
     }
     @Test void responds202WithPrivateReceiptAndLocationThenRemovesTemp() throws Exception {
         var video = new Video(UUID.randomUUID(), owner, "sample.mp4", "private-key", 3, Instant.now()).queued();

@@ -39,7 +39,7 @@ public class VideoUploadController {
         }
         try (var input = file.getInputStream(); var staged = files.stage(input)) {
             var video = upload.execute(owner, intention, file.getOriginalFilename(), staged.size(), staged.sha256(), staged.path());
-            return ResponseEntity.accepted().location(URI.create("/videos/" + video.id()))
+            return ResponseEntity.accepted().location(URI.create(request.getContextPath() + "/videos/" + video.id()))
                     .body(VideoController.VideoResponse.from(video));
         }
     }
