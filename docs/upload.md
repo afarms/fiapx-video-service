@@ -33,7 +33,7 @@ curl -i http://localhost:8080/videos \
   -F 'file=@/c/caminho/video.mp4'
 ```
 
-O primeiro aceite retorna 202 e `Location: /videos/{id}`. Corpo:
+O primeiro aceite retorna 202 e `Location: /videos/{id}` no acesso direto. Pela entrada pública, o contexto encaminhado é preservado: `Location: /api/video/videos/{id}`. Corpo:
 
 ```json
 {"id":"UUID","originalName":"video.mp4","sizeBytes":12345,"status":"QUEUED","createdAt":"2026-09-27T12:00:00Z"}

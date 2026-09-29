@@ -4,6 +4,7 @@ metadata:
   name: fiapx-video-service
   namespace: fiapx
 data:
+  SERVER_FORWARD_HEADERS_STRATEGY: "framework"
   API_DOCS_ENABLED: "true"
   AWS_REGION: "us-east-1"
   SERVER_PORT: "8080"
