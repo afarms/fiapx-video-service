@@ -4,10 +4,12 @@ metadata:
   name: fiapx-video-service
   namespace: fiapx
 spec:
-  type: ClusterIP
+  type: NodePort
+  externalTrafficPolicy: Cluster
   selector:
     app: fiapx-video-service
   ports:
     - name: http
       port: 8080
+      nodePort: 30082
       targetPort: http

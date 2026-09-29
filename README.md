@@ -1,5 +1,7 @@
 # FIAP X — Serviço de vídeos
 
+Entrada cloud preparada: /api/video/ no endereço CloudFront, Swagger em /api/video/swagger-ui.html. O Service NodePort30082 é privado e mantém porta8080 interna. Upload e download continuam passando pela API; não há URL pré-assinada para o navegador. SERVER_FORWARD_HEADERS_STRATEGY=framework preserva o prefixo/HTTPS externos. A URL real e a ordem de ativação estão no [runbook de infraestrutura](https://github.com/afarms/fiapx-infra/blob/main/docs/operations/public-api.md); dependem do apply.
+
 Domínio responsável pela submissão de vídeos, metadados, estado público do processamento e autorização de download. Fundação implementada com Java 21, Spring Boot 4.1.1, Maven Wrapper 3.9.16 e PostgreSQL 17. Adota Clean Architecture com core independente de framework, VideoGateway e persistência Spring Data JPA na infraestrutura. Inclui migrations Liquibase e testes unitários. Consultas autenticadas e upload com idempotência, S3 e outbox/SQS estão implementados, com publicação desativada por padrão. O produtor foi validado com PostgreSQL e S3/SQS reais. Consumo de resultados e estados PROCESSING/COMPLETED/FAILED estão implementados, com consumo desativado por padrão; validação cloud do fluxo de processamento e download permanecem pendentes. Consulte [upload e recuperação](docs/upload.md) e [resultados de processamento](docs/processing-results.md).
 
 ## Build e testes unitários
