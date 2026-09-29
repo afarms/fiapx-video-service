@@ -4,6 +4,7 @@ metadata:
   name: fiapx-video-service
   namespace: fiapx
 data:
+  API_DOCS_ENABLED: "true"
   AWS_REGION: "us-east-1"
   SERVER_PORT: "8080"
   DB_URL: "jdbc:postgresql://${DB_HOST}:5432/fiapx_video?sslmode=verify-full&sslrootcert=/etc/fiapx/ca/rds-ca.pem"
